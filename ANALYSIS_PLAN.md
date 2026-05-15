@@ -19,7 +19,7 @@ session.
 |     8 | Volume I — vasculature                      | complete    |
 |     9 | Volume II — soma generation                 | complete    |
 |    10 | Volume III — dendrites                      | complete    |
-|    11 | Volume IV — axons + neuropil background     | pending     |
+|    11 | Volume IV — axons + neuropil background     | complete    |
 |    12 | Volume V — top-level orchestration          | pending     |
 |    13 | Scanning I — PSF FFT + single-frame scan    | pending     |
 |    14 | Scanning II — noise model                   | pending     |
@@ -621,6 +621,37 @@ Port `generate_axons.m`, `sort_axons.m`, `generate_bgdendrites.m`.
 **Tests**: axon density matches request; background processes fill expected
 volume fraction.
 
+**Notes**: Implemented in `src/volume/axons.jl` (`generate_axons`,
+`sort_axons`) and `src/volume/background.jl` (`generate_bg_dendrites`).
+Heavy reuse of `dendrite_random_walk` and `dilate_dendrite_paths_all`
+from Chunk 10.
+
+**Deviations from upstream**:
+
+- **`gp_bgvals` and `gp_vals` use NamedTuple-of-vectors** rather than
+  upstream's `cell` arrays with positional columns. Per-entry structure:
+  `(loc::Vector{Int32}, val::Vector{Float32})` for `gp_bgvals` and
+  `(loc, val, is_soma)` for the soma/dendrite `gp_vals`. Background
+  entries appended to `gp_vals` carry an all-false `is_soma` bitvector
+  to stay structurally compatible.
+- **`sort_axons` nearest-cell assignment is greedy** (each cell takes
+  its nearest available axon, marking that axon's column as `Inf`)
+  rather than a Hungarian optimal assignment. Matches upstream's
+  semantics exactly.
+- **`generate_bgdendrites`'s outside-volume root sampling.** Upstream
+  uses `floor(rand(1,3).*(volsize+2*dtSize)-dtSize)` and rejects roots
+  inside the volume. The Julia port mirrors this with the same
+  rejection loop and a 100-try safety cap.
+- **Entry-point shift on the volume boundary** preserves upstream's
+  `switch shiftLoc` rule: on the face where the line root→ends
+  enters the volume, jitter the orthogonal coordinates by a small
+  amount (`rand(1:shiftdist)`) to avoid funnelling all axons through
+  the exact corner.
+- **AxonParams `N_proc` is treated as a return slot**, not just an
+  input. `generate_axons` returns an `AxonParams` whose `N_proc`
+  equals the number of processes actually produced — downstream
+  `sort_axons` then bins them.
+
 ### Chunk 12 — Volume V: top-level orchestration
 
 Port `simulate_neural_volume.m`, `branchGrowNodes.m`, `gennode.m`,
@@ -864,4 +895,5 @@ statistics.
 - 2026-05-15 CHUNK-008 (vasculature) → next: CHUNK-009
 - 2026-05-15 CHUNK-009 (soma generation + rasterization) → next: CHUNK-010
 - 2026-05-15 CHUNK-010 (dendrites + smoothCellBody + setCellFluoresence) → next: CHUNK-011
+- 2026-05-15 CHUNK-011 (axons + neuropil background) → next: CHUNK-012
 

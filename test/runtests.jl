@@ -12,4 +12,5 @@ using Test
     include("volume/test_vasculature.jl")
     include("volume/test_somata.jl")
     include("volume/test_dendrites.jl")
+    include("volume/test_axons.jl")
 end
