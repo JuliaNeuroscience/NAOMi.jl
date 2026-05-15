@@ -7,4 +7,5 @@ using Test
     include("timetraces/test_calcium.jl")
     include("timetraces/test_traces.jl")
     include("optics/test_psf.jl")
+    include("optics/test_zernike.jl")
 end

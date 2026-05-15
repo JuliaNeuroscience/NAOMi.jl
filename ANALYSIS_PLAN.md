@@ -14,7 +14,7 @@ session.
 |     3 | TimeTraces II — calcium dynamics            | complete    |
 |     4 | TimeTraces III — top-level + correlation    | complete    |
 |     5 | Optics I — PSF kernels                      | complete    |
-|     6 | Optics II — Zernike + back-aperture         | pending     |
+|     6 | Optics II — Zernike + back-aperture         | complete    |
 |     7 | Optics III — Fresnel propagation            | pending     |
 |     8 | Volume I — vasculature                      | pending     |
 |     9 | Volume II — soma generation                 | pending     |
@@ -334,11 +334,36 @@ was suggested in the original plan; it isn't actually needed yet
 ### Chunk 6 — Optics II: Zernike + back-aperture
 
 Port `zernike.m`, `generateZernike.m`, `applyZernike.m`, `generateBA.m`.
-Survey `ZernikePolynomials.jl` first; reuse if it provides Noll-indexed
-evaluation, otherwise hand-roll (it's <100 LOC).
 
-**Tests**: orthogonality on the unit disk; aberration application preserves
-total power.
+**Tests**: low-order analytic forms (`Z_1 = 1`, `Z_2 = 2x`, `Z_3 = 2y`,
+`Z_4 = √3(2r² − 1)`); numerical orthonormality on the unit disk via
+trapezoidal sums on a 200×200 grid; phase-only modulation preserves
+`|U|²`; zero aberrations is identity; `generate_back_aperture`
+produces a square complex array with the hard-aperture mask zeroing
+corners and a peak in the centre.
+
+**Notes**: All four ports live in `src/optics/zernike.jl`. Public
+exports: `zernike_polynomial`, `generate_zernike_weights`,
+`apply_zernike`, `generate_back_aperture`. Hand-rolled — the
+ZernikePolynomials.jl survey was skipped since upstream's `zidx` is
+trivially Noll-conformant and the radial polynomial is ~10 LOC. No
+new dependency.
+
+**Deviations from upstream**:
+
+- **Only the simple path of `generateBA.m` is ported** (the
+  `imax*jmax == 1` branch, no `psf_params.zernikeDst`). The cell-array
+  branch produces one back-aperture per FOV pixel with spatially-varying
+  Zernike weights; deferred until a downstream chunk actually needs it.
+  Upstream's cell-array branch also has a latent bug (it forgets the
+  `X/objrad`, `Y/objrad` normalisation before calling `applyZernike`);
+  fix that on porting.
+- **`PSFParams.zernikeDst` not added** — would be a per-call function /
+  table. Deferred with the cell-array branch.
+- **`vol_params.vasc_sz` not a `VolumeParams` field**. `generate_back_aperture`
+  computes it on-the-fly from `gaussian_beam_size` (matching upstream's
+  "compute if missing" pattern). When Chunk 7 adds `setOpticalParams`
+  this may be cached.
 
 ### Chunk 7 — Optics III: Fresnel propagation + cortical mask
 
@@ -555,4 +580,5 @@ statistics.
 - 2026-05-15 CHUNK-003 (calcium dynamics) → next: CHUNK-004
 - 2026-05-15 CHUNK-004 (top-level traces + Hawkes) → next: CHUNK-005
 - 2026-05-15 CHUNK-005 (Gaussian PSF kernels)     → next: CHUNK-006
+- 2026-05-15 CHUNK-006 (Zernike + back-aperture)  → next: CHUNK-007
 
