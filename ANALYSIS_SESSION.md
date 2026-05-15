@@ -7,88 +7,78 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 16 — Ideal components + ground truth.** Ported into
-`src/scanning/ideal.jl`:
+**Chunk 17 — I/O + reference demo script.**
 
-- `calculate_ideal_comps(neur_vol, psf, neur_act, scan_params; ...)` —
-  per-cell spatial-profile stack (`comps`), baseline-activity image
-  (`baseim`), and SNR-thresholded "ideal" stack (`ideal`). Drives
-  `scan_volume` with `motion=false` over a diagonal "activate-one-
-  component" matrix.
-- `comps2ideals(comps, baseim; k=2)` — SNR ratio + connected-component
-  clean-up (largest 4-connected blob ≥ 5 px above per-component cutoff).
-- `times_from_profs(mov, neur_prof; bg_profs=nothing, lambda=0,
-  nnls=true)` — projected-gradient NNLS recovery of per-component
-  time traces. Falls back to unconstrained LS with `nnls=false`.
+- `src/io.jl` (was placeholder): TIFF read/write. Public exports
+  `write_tiff`, `read_tiff`, `write_tiff_blocks`, `write_tpm_movie`.
+  Uses `TiffImages.jl`; data is wrapped in `TiffImages.Gray` to satisfy
+  the library's `Colorant` element-type requirement.
+- `examples/standard_pipeline.jl` (new): a thin script running the full
+  pipeline — `simulate_neural_volume` → `gaussian_psf_na` →
+  `generate_time_traces` → `scan_volume` → `calculate_ideal_comps` /
+  `times_from_profs` → `write_tpm_movie` — on a 30×30×20 µm volume.
+  Runs end-to-end in ~21 s (verified; <2 min target met).
+- `test/test_io.jl` (new): 20 portable TIFF round-trip tests.
 
-End-to-end recovery on a synthetic 2-cell sinusoidal-activity clean
-movie yields ρ > 0.95 between recovered traces and ground truth for the
-isolated-profile test case.
+Also fixed a latent bug in `src/scanning/scan.jl` (Chunk-15 code): the
+motion-shear `range(0, 1; length=mid_len)` threw when `mid_len == 1`.
 
-651 tests pass on Julia 1.10 LTS; +18 over Chunk 15.
+671 tests pass on Julia 1.10 LTS; +20 over Chunk 16.
 
 ## Key decisions made
 
-- **`scan_ideal.m` not separately ported.** Upstream depends on the
-  absent `single_scan_stack.m`; the working part of its behaviour is
-  subsumed by `calculate_ideal_comps`.
-- **`constrainEstToSomas.m` deferred** to Chunk 19. It manipulates an
-  `est` struct produced by downstream analysis (component-matching),
-  which this port has not built.
-- **NNLS via hand-rolled projected gradient** (~30 LOC) instead of a
-  TFOCS dependency or `NonNegLeastSquares.jl`. Uses a 30-iteration
-  power-method estimate of `‖AᵀA‖` to pick the step size.
-- **L1-penalised path (`lambda > 0`) explicitly errors** rather than
-  silently calling unconstrained LS — standard-pipeline tests do not
-  exercise it, and the deferral is documented.
-- **`Statistics` added to `[deps]`** to access `mean`/`median`.
-  Qualified as `Statistics.mean` / `Statistics.median` to dodge the
-  `Distributions.mean` name collision.
+- **`tifinitialize.m` / `tifappend.m` (streaming append) not ported.**
+  `write_tiff_blocks` (multi-file block output) covers the practical
+  need; true incremental append is awkward with `TiffImages`.
+- **`make_avi.m` not ported.** Needs a plotting backend; TIFF is the
+  portable interchange format. Deferred to Chunk 19.
+- **`saveSimulationParts.m` not ported.** Splits a MATLAB `.mat`
+  workspace dump — no Julia equivalent concept.
+- **`write_tpm_movie` only supports `.tif`.** `.fits` / `.mat` throw a
+  clear "not ported" error.
+- **Demo script verification is NOT a committed test.** Running the
+  full 21 s pipeline as a unit test is heavy and non-portable in
+  spirit; `test/test_io.jl` covers I/O with synthetic fixtures and the
+  demo is exercised manually (recorded here).
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/scanning/ideal.jl` — populated (was placeholder; +230 LOC).
-  - `test/scanning/test_ideal.jl` — new (+18 tests).
+  - `src/io.jl` — populated (was placeholder; +120 LOC).
+  - `examples/standard_pipeline.jl` — new (+80 LOC).
+  - `test/test_io.jl` — new (+20 tests).
   - `test/runtests.jl` — includes the new test file.
-  - `Project.toml` — `Statistics` moved from `[extras]` to `[deps]`
-    with `compat = "1.10"`.
-  - `ANALYSIS_PLAN.md` — chunk-status table updated + chunk-16
-    notes/deviations + ledger entry + two working-knowledge entries.
+  - `src/scanning/scan.jl` — latent `mid_len == 1` bug fixed.
+  - `ANALYSIS_PLAN.md` — chunk-status table + chunk-17 notes + ledger.
 - Package loads cleanly: yes.
-- Test suite passes: yes — 651/651 on Julia 1.10 LTS.
-- Entry point(s): users can call
-  `calculate_ideal_comps(nv, psf, neur_act, scan_params; ...)` to get
-  per-cell ideal spatial profiles, then `times_from_profs(mov, comps)`
-  to extract per-cell traces from a recorded movie.
+- Test suite passes: yes — 671/671 on Julia 1.10 LTS.
+- Entry point: `julia --project examples/standard_pipeline.jl` runs the
+  whole pipeline and writes `movie.tif` / `movie_clean.tif` to a temp
+  directory (override with the `NAOMI_OUTPUT_DIR` env var).
 
 ## Next chunk
 
-**Chunk 17 — I/O + reference demo script.** Port `tiff_writer.m`,
-`tifwrite.m`, `tifwriteblock.m`, `tifappend.m`, `tifinitialize.m`,
-`tiff_reader.m`, `tifread.m`, `make_avi.m`, `saveSimulationParts.m`,
-`write_TPM_movie.m` using `TiffImages.jl`. Translate
-`TPM_Simulation_Script_standard.m` to `examples/standard_pipeline.jl`.
-
-Target files: `src/io.jl` (already placeholder) and
-`examples/standard_pipeline.jl` (new). Tests: round-trip TIFF
-write/read preserves shape and dtype; demo script runs on a 30×30×20
-µm volume in <2 min.
+**Chunk 18 — Documentation pass.** Add docstrings for every exported
+symbol (most already have them — audit for gaps), build a Documenter.jl
+site under `docs/` with sections matching the five modules
+(TimeTraces, Optics, Volume, Scanning, I/O), a "getting started" page
+reproducing `examples/standard_pipeline.jl`, and the Song et al. 2021
+citation on the index. Hook into the existing CI workflow.
 
 ## Watch out for
 
-- **`TiffImages.jl` is already in `[deps]`** but has not been
-  imported in any source file yet. Add `using TiffImages` to
-  `src/NAOMi.jl` (or just `src/io.jl`).
-- **`VideoIO.jl` for AVI is heavyweight** — the plan suggests
-  skipping if it's too heavy. A reasonable call is to document that
-  AVI output is unsupported and refer users to the TIFF path.
-- **`saveSimulationParts.m` writes per-frame TIFFs into a folder with
-  a specific filename template** (`fsimPath_%02d.tif`). The
-  `scan_params.fsimPath` / `fsimCleanPath` fields are already in
-  `ScanParams` (not yet — check `src/params.jl` and add if missing).
-- **`examples/standard_pipeline.jl` should be a thin script** —
-  `releasable-package` rule: substantive logic stays in `src/`.
+- **`docs/` directory already exists** — check what's in it before
+  overwriting (`ls docs/`). It may hold a Documenter skeleton from
+  Chunk 0 bootstrap.
+- **Most exported symbols already carry docstrings** from their
+  porting chunks. Chunk 18 is largely an audit + Documenter wiring
+  job, not a write-from-scratch job. Consider the `freshen-docs` /
+  `freshen-docstrings` skills as references for the conventions.
+- **The five-module structure** for the docs sections:
+  `src/timetraces/`, `src/optics/`, `src/volume/`, `src/scanning/`,
+  `src/io.jl`.
+- **CI workflow** — check `.github/workflows/` for an existing
+  doc-deploy job to hook into.
 
 ## Working stance reminder
 

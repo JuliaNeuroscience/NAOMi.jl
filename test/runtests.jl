@@ -18,4 +18,5 @@ using Test
     include("scanning/test_noise.jl")
     include("scanning/test_scan.jl")
     include("scanning/test_ideal.jl")
+    include("test_io.jl")
 end

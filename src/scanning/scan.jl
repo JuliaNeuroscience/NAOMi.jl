@@ -175,7 +175,9 @@ function scan_volume(neur_vol::NeuralVolume,
             head_len = rand(rng, 1:max(1, fld(2 * H, 5)))
             mid_len  = max(1, Int(round(rand(rng) * 3 * H / 5)))
             slope = (2 * (rand(rng) - 0.5)) * maxshear * H
-            seg = collect(range(0, 1; length=mid_len)) .* slope
+            # MATLAB `linspace(0,1,1)` collapses to the stop value (1).
+            seg = mid_len == 1 ? [slope] :
+                  collect(range(0, 1; length=mid_len)) .* slope
             for i in 1:H
                 if i <= head_len
                     y_shr[i] = 0

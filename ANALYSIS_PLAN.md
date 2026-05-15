@@ -25,7 +25,7 @@ session.
 |    14 | Scanning II — noise model                   | complete    |
 |    15 | Scanning III — full scan + motion           | complete    |
 |    16 | Ideal components + ground truth             | complete    |
-|    17 | I/O + reference demo script                 | pending     |
+|    17 | I/O + reference demo script                 | complete    |
 |    18 | Documentation pass                          | pending     |
 |    19 | Deferred-work inventory                     | pending     |
 
@@ -851,6 +851,50 @@ Port `tiff_writer.m`, `tifwrite.m`, `tifwriteblock.m`, `tifappend.m`,
 **Tests**: round-trip TIFF write/read preserves shape and dtype; demo
 script runs on a 30×30×20 µm volume in <2 min.
 
+**Notes**: TIFF I/O implemented in `src/io.jl`. Public exports:
+`write_tiff`, `read_tiff`, `write_tiff_blocks`, `write_tpm_movie`.
+Reference demo at `examples/standard_pipeline.jl` runs the full
+volume → PSF → activity → scan → ideal-components → TIFF pipeline on a
+30×30×20 µm volume in ~21 s (verified on the dev machine; <2 min
+target met). 20 portable I/O round-trip tests in `test/test_io.jl`.
+
+**Deviations from upstream**:
+
+- **`TiffImages.jl` requires `Colorant` element types.** A plain
+  numeric `Array{Float32,3}` cannot be saved directly; `write_tiff`
+  wraps data in `TiffImages.Gray` and `read_tiff` unwraps via
+  `TiffImages.gray`. Round-trip is bit-exact for `Float32` /
+  `Float64`.
+- **`tifinitialize.m` / `tifappend.m` (frame-by-frame streaming
+  append) not ported.** True incremental append across separate
+  calls is awkward with `TiffImages` (the file handle would need to
+  stay open across the scan loop). `write_tiff_blocks` covers the
+  practical need — writing a finished movie split into
+  `stem_00001.tif`, `stem_00002.tif`, … block files. Deferred to
+  Chunk 19 inventory.
+- **`make_avi.m` not ported.** It renders frames through a MATLAB
+  figure (`imagesc` + `getframe` + `VideoWriter`); a faithful port
+  needs a plotting backend (`Makie`/`VideoIO`). The TIFF path is the
+  portable interchange format the plan calls for. Deferred to
+  Chunk 19 inventory.
+- **`saveSimulationParts.m` not ported.** It splits a monolithic
+  MATLAB `.mat` workspace dump into `_volume.mat`, `_psf.mat`, etc.
+  The Julia port never builds such a `.mat`; the concept does not
+  carry over. Deferred.
+- **`write_tpm_movie` only supports `.tif`.** Upstream's `.fits`
+  (via `fitswrite`) and `.mat` branches throw a clear "not ported"
+  `ArgumentError`. `.fits` would need `FITSIO.jl`; `.mat` would need
+  `MAT.jl` — neither is justified for the standard pipeline.
+- **Latent bug fixed in `scan_volume` (Chunk 15 code).** The motion
+  shear built `range(0, 1; length=mid_len)`, which throws
+  `ArgumentError: endpoints differ` when `mid_len == 1` (a value
+  reachable on small volumes). `scan.jl` now special-cases
+  `mid_len == 1` to `[slope]`, matching MATLAB `linspace(0,1,1)`
+  semantics (collapses to the stop value). Surfaced by the demo
+  script's 30×30×20 µm volume; not caught by the Chunk-15 tests
+  because their `H` never produced `mid_len == 1` under the test
+  seeds.
+
 ### Chunk 18 — Documentation pass
 
 Docstrings for every exported symbol; Documenter.jl site under `docs/` with
@@ -1060,4 +1104,5 @@ statistics.
 - 2026-05-15 CHUNK-014 (Poisson-Gauss noise + pixel bleed) → next: CHUNK-015
 - 2026-05-15 CHUNK-015 (full scan + motion) → next: CHUNK-016
 - 2026-05-15 CHUNK-016 (ideal components + NNLS time-trace extraction) → next: CHUNK-017
+- 2026-05-15 CHUNK-017 (TIFF I/O + reference demo script) → next: CHUNK-018
 
