@@ -10,7 +10,7 @@ session.
 |------:|---------------------------------------------|-------------|
 |     0 | Bootstrap                                   | complete    |
 |     1 | Parameter types                             | complete    |
-|     2 | TimeTraces I — spike generation             | pending     |
+|     2 | TimeTraces I — spike generation             | complete    |
 |     3 | TimeTraces II — calcium dynamics            | pending     |
 |     4 | TimeTraces III — top-level + correlation    | pending     |
 |     5 | Optics I — PSF kernels                      | pending     |
@@ -161,6 +161,23 @@ strengths.
 
 **Tests**: empirical rate matches `SpikeOptions.rate` within tolerance;
 burst-mean matches.
+
+**Notes**: All three ported into `src/timetraces/spikes.jl`. Public
+exports: `sample_firing_rates`, `generate_burst_spike_times`,
+`sample_marked_point_process`, `bin_spike_trains`. `Random` is namespaced
+(use `Random.default_rng()` — `default_rng` is not auto-exposed by
+`using Random` in 1.10). Two-arg overloads accept an `AbstractRNG` first
+for deterministic testing; no-arg forms use the default RNG.
+
+`sample_marked_point_process` is the generic Ogata-thinning routine
+needed for Chunk 4's Hawkes implementation; the dynamic-growth path
+(when `nummax` is infinite) doubles the event buffer as needed. CIF
+callbacks receive subarray views of the past-event arrays — do not
+mutate them.
+
+Test deps `Random` and `Statistics` added to `[extras]` /
+`[targets.test]` for stochastic testing. Tests rely on fixed-seed
+`MersenneTwister` for reproducibility.
 
 ### Chunk 3 — TimeTraces II: calcium dynamics
 
@@ -360,9 +377,20 @@ statistics.
   defaults are `0.3` / `0.4`, encoded here. If downstream tests ever
   cross-check against upstream MATLAB output, this is the value that
   matches what upstream actually applied.
+- **2026-05-15 (CHUNK-002)**: `Random.default_rng` is *not* auto-exposed
+  by `using Random` in Julia 1.10 — qualify it as `Random.default_rng()`
+  in all submodules. (`Distributions` and other deps are imported via
+  `using` in `src/NAOMi.jl` at the package top level; all submodule
+  files share that namespace.)
+- **2026-05-15 (CHUNK-002)**: Upstream's spike-time loop writes
+  `S(k, bin) = 1` (assignment, not increment), so coincident bursts in a
+  single bin do not accumulate. The Julia port mirrors this. If
+  downstream code wants count semantics (e.g. for binning a Hawkes
+  process), use `bin_spike_trains`, which *does* accumulate.
 
 ## Session ledger
 
 - 2026-05-15 CHUNK-000 (bootstrap) → next: CHUNK-001
 - 2026-05-15 CHUNK-001 (parameter types) → next: CHUNK-002
+- 2026-05-15 CHUNK-002 (spike generation) → next: CHUNK-003
 

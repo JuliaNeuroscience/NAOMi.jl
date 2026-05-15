@@ -1,5 +1,8 @@
 module NAOMi
 
+using Random
+using Distributions
+
 # Placeholder includes for the five-stage pipeline. Each is populated in a
 # later chunk; see ANALYSIS_PLAN.md for the schedule.
 include("params.jl")
