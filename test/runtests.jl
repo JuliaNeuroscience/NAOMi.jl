@@ -5,4 +5,5 @@ using Test
     include("test_params.jl")
     include("timetraces/test_spikes.jl")
     include("timetraces/test_calcium.jl")
+    include("timetraces/test_traces.jl")
 end

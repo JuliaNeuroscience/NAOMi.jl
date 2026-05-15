@@ -12,7 +12,7 @@ session.
 |     1 | Parameter types                             | complete    |
 |     2 | TimeTraces I — spike generation             | complete    |
 |     3 | TimeTraces II — calcium dynamics            | complete    |
-|     4 | TimeTraces III — top-level + correlation    | pending     |
+|     4 | TimeTraces III — top-level + correlation    | complete    |
 |     5 | Optics I — PSF kernels                      | pending     |
 |     6 | Optics II — Zernike + back-aperture         | pending     |
 |     7 | Optics III — Fresnel propagation            | pending     |
@@ -252,13 +252,51 @@ Public exports: `make_doub_exp_kernel`, `make_calcium_impulse`,
 ### Chunk 4 — TimeTraces III: top-level + correlation
 
 Port `generateTimeTraces.m`, `genCorrelatedSpikeTrains2.m`,
-`expression_variation.m`. Hawkes correlation uses pairwise neuron distances;
-take locations as an argument (the volume stage produces them; here exercise
-with synthetic positions).
+`expression_variation.m`, and the supporting `sampSmallWorldMat.m`.
+Hawkes correlation uses pairwise neuron distances; take locations as
+an argument (the volume stage produces them; here exercised with
+synthetic positions).
 
-**Tests**: end-to-end `generate_time_traces(spike_opts, locs)` returns a
-`(K, nt)` matrix with the right firing-rate statistics; correlated case
-shows positive pair correlations falling off with distance.
+**Tests**: end-to-end `generate_time_traces(spike_opts)` returns the
+expected `(K, nt)` shape; AR1/AR2 and Ca_DE branches both produce
+finite output; Hawkes path with `N_bg > 0` produces matching shapes;
+expression-variation factors are positive (or zero for silenced
+cells) with the documented log-normal / uniform support; spatial
+correlation: in a 1-D arrangement, pairs ≤ 2 apart have higher
+50-sample-binned correlation than pairs ≥ 15 apart.
+
+**Notes**: All four ports live in `src/timetraces/traces.jl`. Public
+exports: `samp_small_world_mat`, `expression_variation`,
+`gen_correlated_spike_trains`, `generate_time_traces`. The continuous
+(`discrete_flag = false`) path through `markpointproc` is *not*
+ported — the standard pipeline always uses the discrete approximation.
+
+**Deviations from upstream**:
+
+- **`extSc`/`inbSc` sized to `N_tot = K + N_bg`** rather than upstream's
+  `K`. Upstream is latent-buggy when `N_bg > 0` (vector-size mismatch
+  inside the discrete loop); the port fixes this without semantic
+  change for `N_bg = 0`.
+- **MATLAB `resample` (polyphase) replaced by linear interpolation**
+  in `_resample_to_user`. Adequate for the simulation rates the
+  downstream pipeline cares about; a polyphase port is left as a
+  TODO if anyone observes spectral artefacts in Chunk 13+.
+- **`bin_spike_trains` not invoked** by `gen_correlated_spike_trains`
+  — the discrete simulation already emits at the bin grid, so the
+  intermediate continuous-time events were skipped. `bin_spike_trains`
+  remains exported and tested from Chunk 2 for the continuous path
+  when/if that is ported.
+- **Per-compartment `ext_rate` and `ext_mult` overrides preserved
+  verbatim** from `generateTimeTraces.m` (`:single`/`:double` use
+  hard-coded soma/dend/bg values; `:Ca_DE` overrides `bg`'s
+  `ext_rate` and `dend`/`bg`'s `ext_mult`).
+- **AR1/AR2 branches** *are* ported here (they live in
+  `generateTimeTraces.m`, dispatching on `spike_opts.dyn_type`).
+  Chunk 3's plan correctly notes that `calcium_dynamics.m` itself
+  never dispatches on AR1/AR2 — but `generate_time_traces` does, via
+  a separate convolution branch using `make_calcium_impulse`.
+- **Multi-batch path (`batch_sz < N_node`) skipped** — every upstream
+  caller uses the default single-batch.
 
 ### Chunk 5 — Optics I: PSF kernels
 
@@ -458,6 +496,22 @@ statistics.
   samples) because `CB_i(0) = 0` is not the equilibrium of the binding
   ODE. This is upstream behaviour, mirrored here. Tests bound the
   drift to <1 % rather than asserting equality.
+- **2026-05-15 (CHUNK-004)**: Upstream's "K_conn" parameter to
+  `sampSmallWorldMat` is *not* the number of connections per node —
+  the Toeplitz lattice init yields `K_conn − 1` connections per
+  interior node (the diagonal is counted once), and rewiring preserves
+  that count. Tests should bound row-sums against `K_conn − 1` (and
+  the diagonal already carries a `1` before `self_ex` is added).
+- **2026-05-15 (CHUNK-004)**: `SpikeOptions.smod_flag === :hawkes`
+  generates *both* soma and background spike trains in one call
+  through `gen_correlated_spike_trains`. The non-Hawkes path
+  (`:independent`) generates soma and bg separately with
+  `generate_burst_spike_times`. Future chunks integrating with
+  generated volumes should pick the path based on `smod_flag`.
+- **2026-05-15 (CHUNK-004)**: Internal simulation rate is fixed at
+  100 Hz; the user-facing `spike_opts.dt` triggers a linear-interp
+  resample. Polyphase / anti-aliasing is deferred; if Chunk 13+ shows
+  spectral artefacts at slow `dt`, revisit.
 
 ## Session ledger
 
@@ -465,4 +519,5 @@ statistics.
 - 2026-05-15 CHUNK-001 (parameter types) → next: CHUNK-002
 - 2026-05-15 CHUNK-002 (spike generation) → next: CHUNK-003
 - 2026-05-15 CHUNK-003 (calcium dynamics) → next: CHUNK-004
+- 2026-05-15 CHUNK-004 (top-level traces + Hawkes) → next: CHUNK-005
 
