@@ -78,6 +78,83 @@ end
 # Grid Dijkstra on a 6-directional edge-weight array
 # ---------------------------------------------------------------------------
 
+# Core grid-Dijkstra with reusable buffers and optional early termination.
+#
+# `distance` / `pathfrom` are reset only over the `touched` voxels left by
+# the previous call, then reused — the caller allocates them once and
+# threads them through every per-cell call. `heap` is likewise reused (its
+# capacity is retained across calls).
+#
+# With a non-empty `targets` list (linear voxel indices) the search stops
+# as soon as every target voxel has been settled. This is exact: Dijkstra
+# settles voxels in nondecreasing distance order, so once a voxel is
+# popped its `distance` and `pathfrom` entry are already final — and
+# `get_dendrite_path` only ever walks back from target voxels.
+function _dijkstra!(distance::AbstractArray{Float32,3},
+                    pathfrom::AbstractArray{Int,3},
+                    heap::_MinHeap, touched::Vector{Int},
+                    M::AbstractArray{<:Real,4},
+                    root::NTuple{3,<:Integer},
+                    targets::AbstractVector{<:Integer})
+    H, W, D = size(M, 1), size(M, 2), size(M, 3)
+    size(M, 4) == 6 || throw(ArgumentError("M must have size (H, W, D, 6)"))
+    lin = LinearIndices((H, W, D))
+    cart = CartesianIndices((H, W, D))
+
+    @inbounds for li in touched
+        distance[li] = Inf32
+        pathfrom[li] = 0
+    end
+    empty!(touched)
+    empty!(heap.keys)
+    empty!(heap.vals)
+
+    root_li = lin[root...]
+    distance[root_li] = 0.0f0
+    pathfrom[root_li] = 0
+    push!(touched, root_li)
+    _push!(heap, 0.0f0, root_li)
+
+    early = !isempty(targets)
+    target_set = Set{Int}()
+    for t in targets
+        push!(target_set, Int(t))
+    end
+    n_left = length(target_set)
+
+    offsets = ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
+               (0, -1, 0), (0, 0, 1), (0, 0, -1))
+
+    while !isempty(heap)
+        cn_d, cn_idx = _pop!(heap)
+        cn_d > distance[cn_idx] && continue
+        if early && (cn_idx in target_set)
+            delete!(target_set, cn_idx)
+            n_left -= 1
+            n_left == 0 && break
+        end
+        c = cart[cn_idx]
+        @inbounds for d in 1:6
+            off = offsets[d]
+            ni = c[1] + off[1]
+            nj = c[2] + off[2]
+            nk = c[3] + off[3]
+            (1 <= ni <= H && 1 <= nj <= W && 1 <= nk <= D) || continue
+            w = M[ni, nj, nk, d]
+            isfinite(w) || continue
+            ndist = cn_d + Float32(w)
+            nidx = lin[ni, nj, nk]
+            if ndist < distance[nidx]
+                distance[nidx] == Inf32 && push!(touched, nidx)
+                distance[nidx] = ndist
+                pathfrom[nidx] = cn_idx
+                _push!(heap, ndist, nidx)
+            end
+        end
+    end
+    return distance, pathfrom
+end
+
 """
     dendrite_dijkstra_grid(M::AbstractArray{<:Real,4}, root::NTuple{3,<:Integer})
         -> (distance, pathfrom)
@@ -94,7 +171,10 @@ Returns:
   voxel on the shortest path (`0` for `root` and unreachable voxels).
 
 Ports `dendrite_dijkstra2.m` + the `dendrite_dijkstra_cpp.cpp` MEX
-kernel; uses a hand-rolled binary min-heap.
+kernel; uses a hand-rolled binary min-heap. The dendrite-growth callers
+use an internal early-terminating variant that stops once the sampled
+endpoint voxels are settled; this exported entry point runs the full
+single-source search.
 """
 function dendrite_dijkstra_grid(M::AbstractArray{<:Real,4},
                                 root::NTuple{3,<:Integer})
@@ -102,37 +182,7 @@ function dendrite_dijkstra_grid(M::AbstractArray{<:Real,4},
     size(M, 4) == 6 || throw(ArgumentError("M must have size (H, W, D, 6)"))
     distance = fill(Float32(Inf), H, W, D)
     pathfrom = zeros(Int, H, W, D)
-    lin = LinearIndices((H, W, D))
-
-    distance[root...] = 0
-    heap = _MinHeap()
-    _push!(heap, 0.0f0, lin[root...])
-
-    offsets = ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
-               (0, -1, 0), (0, 0, 1), (0, 0, -1))
-
-    cart = CartesianIndices((H, W, D))
-    while !isempty(heap)
-        cn_d, cn_idx = _pop!(heap)
-        cn_d > distance[cn_idx] && continue
-        c = cart[cn_idx]
-        @inbounds for d in 1:6
-            off = offsets[d]
-            ni = c[1] + off[1]
-            nj = c[2] + off[2]
-            nk = c[3] + off[3]
-            (1 <= ni <= H && 1 <= nj <= W && 1 <= nk <= D) || continue
-            nidx = lin[ni, nj, nk]
-            w = M[ni, nj, nk, d]
-            !isfinite(w) && continue
-            ndist = cn_d + Float32(w)
-            if ndist < distance[ni, nj, nk]
-                distance[ni, nj, nk] = ndist
-                pathfrom[ni, nj, nk] = cn_idx
-                _push!(heap, ndist, nidx)
-            end
-        end
-    end
+    _dijkstra!(distance, pathfrom, _MinHeap(), Int[], M, root, Int[])
     return distance, pathfrom
 end
 
@@ -476,6 +526,12 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
     end
     lin_full = LinearIndices(fulldims)
 
+    # Reusable Dijkstra buffers (see `_dijkstra!`); allocated once.
+    dij_dist = fill(Inf32, fulldims)
+    dij_path = zeros(Int, fulldims)
+    dij_heap = _MinHeap()
+    dij_touched = Int[]
+
     for j in 1:N_neur
         rootL = (clamp(allroots[j, 1], 1, fulldims[1]),
                  clamp(allroots[j, 2], 1, fulldims[2]),
@@ -525,8 +581,6 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
                 end
             end
         end
-        _, pathfrom = dendrite_dijkstra_grid(M, rootL)
-
         # Basal-tree endpoints.
         numdt = max(1, Int(round(dtParams[1] + dtParams[5] * randn(rng))))
         endsT = NTuple{3,Int}[]
@@ -579,6 +633,14 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
             flag && push!(endsA, rootA)
         end
         all_ends = vcat(endsT, endsA)
+
+        # Endpoint sampling above draws no Dijkstra output, so running it
+        # before the search leaves the RNG stream untouched. Settling just
+        # those endpoints lets the search stop early.
+        targets = Int[lin_full[e...] for e in all_ends]
+        _dijkstra!(dij_dist, dij_path, dij_heap, dij_touched, M, rootL, targets)
+        pathfrom = dij_path
+
         all_paths = Vector{Vector{NTuple{3,Int}}}(undef, length(all_ends))
 
         finepathsIdx = zeros(Float32, fulldims)
@@ -770,11 +832,16 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
     end
     lin_full = LinearIndices(fulldims)
 
+    # Reusable Dijkstra buffers (see `_dijkstra!`); allocated once.
+    dij_dist = fill(Inf32, fulldims)
+    dij_path = zeros(Int, fulldims)
+    dij_heap = _MinHeap()
+    dij_touched = Int[]
+
     for j in 1:length(roots)
         rootL = roots[j]
         obstruction = copy(cellVolume)
         M = _build_dendrite_M(fulldims, obstruction, dweight, bweight; rng=rng)
-        _, pathfrom = dendrite_dijkstra_grid(M, rootL)
 
         nat = Int(atParams[1])
         rootA = (clamp(Int(floor(rootL[1] + 2 * atParams[4] * (rand(rng) - 0.5))),
@@ -802,6 +869,12 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
             end
             flag && push!(endsA, (rootA[1], rootA[2], 1))
         end
+
+        # Endpoint sampling draws no Dijkstra output, so running it before
+        # the search leaves the RNG stream untouched.
+        targets = Int[lin_full[e...] for e in endsA]
+        _dijkstra!(dij_dist, dij_path, dij_heap, dij_touched, M, rootL, targets)
+        pathfrom = dij_path
 
         finepathsVal = zeros(Float32, fulldims)
         for e in endsA
