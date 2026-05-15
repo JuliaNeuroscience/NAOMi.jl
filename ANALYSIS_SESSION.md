@@ -7,120 +7,120 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 8 — Volume I: vasculature.** Ported the entire upstream
-vasculature pipeline into `src/volume/vasculature.jl`:
+**Chunk 9 — Volume II: soma generation.** Ported the soma pipeline into
+`src/volume/somata.jl`:
 
-- `simulate_blood_vessels` — top-level orchestrator (was upstream's
-  `simulatebloodvessels.m`).
-- `grow_major_vessels!` — source / edge / surface / sfvt / diving
-  vessel placement (was `growMajorVessels.m`).
-- `grow_capillaries!` — capillary placement and capp-to-capp /
-  capp-to-vert connectivity (was `growCapillaries.m`).
-- `branch_grow_nodes!` — recursive surface-branch growth
-  (was `branchGrowNodes.m`).
-- `vessel_dijkstra` — direct port of the dense-matrix Dijkstra used
-  for surface-vessel routing; handles `Inf` as "forbidden edge".
-- Supporting helpers: `VesselNode`, `VesselEdge`, `gen_node`,
-  `gen_conn`, `del_node!`, `nodes_to_conn`, `conn_to_vol!`,
-  `pseudo_rand_sample_2d`, `pseudo_rand_sample_3d`.
+- `spiral_sample_sphere` — deterministic golden-angle sphere sampling
+  (replaced upstream's MATLAB `S2_Sampling_Suite` bundle).
+- `teardrop_projection` — pyramidal-cell mean-shape projection.
+- `generate_neural_body` — single-cell mesh (soma + nucleus) via an
+  isotropic Gaussian process on the sphere with PSD-fix-up
+  (`eigmin` + diagonal shift) and Cholesky sampling.
+- `sample_dense_neurons` — N-cell location + shape sampling with
+  vasculature avoidance and `min_dist` repulsion.
+- `generate_neural_volume` — rasterize each cell's mesh into voxel
+  `neur_soma::Array{UInt16,3}`, `neur_vol::Array{Float32,3}`,
+  `gp_nuc::Vector{Tuple}`, `gp_soma::Vector{Vector{Int32}}`.
+- `point_in_soma` — star-shape radial test (replaces upstream's
+  `intriangulation`, sidesteps adding a 3-D convex-hull dependency).
+- `isolate_visible_somas` — filter somata by z-distance to the imaging
+  plane (uses Chunk 7's `width_estimate_3d`).
+- `masked_3d_gp` — FFT-based 3-D Gaussian-process sampler (used by
+  future fluorescence chunks).
 
-The handoff note from Chunk 7 flagged the upstream `gennode` / `delnode`
-/ `branchGrowNodes` / `connToVol` helpers (formally listed in Chunk 12) as
-overlapping with vessel growth — those were ported here so the Chunk 12
-orchestrator stays thin.
+`LinearAlgebra` added to `[deps]` for `cholesky` / `eigmin`.
 
-413 tests pass on Julia 1.10 LTS; +52 new this chunk.
+461 tests pass on Julia 1.10 LTS; +48 over Chunk 8.
 
 ## Key decisions made
 
-- **Did not pull in `Graphs.jl`/`SimpleWeightedGraphs`.** Hand-rolled
-  `vessel_dijkstra` (~25 lines) matches upstream exactly and naturally
-  handles the dense `Inf`-as-forbidden structure that upstream
-  depends on. Building a `complete_graph` + `dijkstra_shortest_paths`
-  is a worse fit.
-- **Replaced `cscvn` (MATLAB cubic-spline curve) with linear
-  interpolation between endpoints in `conn_to_vol!`.** Spline
-  aesthetics are immaterial once each edge is dilated to a tube of
-  radius `conn.weight`. Noted in the function docstring.
-- **Hand-rolled `dilate2d_disk!` / `paint_ball3d!`** in lieu of
-  `ImageMorphology.dilate`. The vasculature mask is small enough that
-  per-point ball painting is plenty fast (sub-second for the test
-  volumes). If profiling later identifies it as a hot path, the swap
-  is local.
-- **`root` field of `VesselNode` uses three reserved values** to
-  faithfully encode upstream's `[]` vs. `0` distinction: `> 0` =
-  parent, `0` = source/no parent, `-1` = deleted-or-orphan capp.
-- **Tests use scaled-down `sourceFreq = 400`, `vesFreq = [80, 100, 30]`**
-  on a ~150 µm side volume. At upstream defaults
-  (`sourceFreq = 1000`, `vesFreq = [125, 200, 50]`) small test volumes
-  round all node counts to 0. Recorded as working knowledge.
+- **Spiral sampling, not Marsaglia.** Despite the chunk plan
+  suggesting Marsaglia random rotations, spiral sampling preserves
+  upstream's per-cell-reuse pattern (one sphere sampling + one
+  geodesic-distance matrix shared across all `K` cells). The geodesic
+  matrix is computed once in `sample_dense_neurons` and threaded
+  through `generate_neural_body` for each cell.
+- **Triangulation `Tri` not produced.** Upstream uses MATLAB's
+  `convhulln` for both the spiral mesh's triangulation and for
+  rasterization via `intriangulation`. The Julia port replaces
+  `intriangulation` with a star-shape radial test (`point_in_soma`)
+  that exploits the fact that every NAOMi soma is star-shaped around
+  its centre. Avoids pulling in `Quickhull.jl`/`MiniQhull.jl`.
+- **`smoothCellBody.m` and `setCellFluoresence.m` deferred.** Both
+  depend on dendrite outputs (Chunk 10). Recorded as deviations.
+- **`generate_neural_volume` ported here (formally Chunk 12 scope).**
+  It is the natural bridge between sampled meshes and voxel masks; the
+  chunk-9 tests for "nucleus fluorescence ratio matches `nuc_fluorsc`"
+  presume its existence. Chunk 12 will now wire `simulate_neural_volume`
+  to call functions that mostly already exist.
+- **Nucleus volume normalisation uses a star-shape analytic estimate**
+  (`sum r³ · 4π/N / 3`) rather than `convhull` volume. The ~5 %
+  error in the volume estimate becomes <2 % error in the linear scale
+  factor (cubic root).
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/volume/vasculature.jl` — populated (was placeholder; +1130 LOC).
-  - `test/volume/test_vasculature.jl` — new (+52 tests).
+  - `src/volume/somata.jl` — populated (was placeholder; +590 LOC).
+  - `Project.toml` — added `LinearAlgebra` to `[deps]`.
+  - `test/volume/test_somata.jl` — new (+48 tests).
   - `test/runtests.jl` — includes the new test file.
-  - `ANALYSIS_PLAN.md` — chunk-status table updated, deviations and
-    working-knowledge entries added.
+  - `ANALYSIS_PLAN.md` — chunk-status table updated; chunk-9 notes /
+    deviations added; three new working-knowledge entries.
 - Package loads cleanly: yes.
 - Test suite passes: yes — `Pkg.test()` on Julia 1.10 LTS shows
-  413/413 passing (was 361 before this chunk).
-- Entry point(s): none yet; Chunks 9–17 build up the rest of the
-  pipeline.
-- Known issues: none introduced this chunk. The pre-existing
-  `gen_correlated_spike_trains — spatial correlation` test from
-  Chunk 4 still fails on Julia 1.12 (RNG-sensitivity in newer
-  Distributions); not touched here.
+  461/461 passing (was 413 before this chunk).
+- Entry point(s): none yet; Chunks 10–17 build up the rest.
+- Known issues: none introduced this chunk. Pre-existing Chunk-4
+  `spatial correlation` flake on Julia 1.12 still pending.
 
 ## Next chunk
 
-**Chunk 9 — Volume II: soma generation.** Port `generateNeuralBody.m`,
-`smoothCellBody.m`, `setCellFluoresence.m`, `pseudoRandSample2D.m` (already
-ported in Chunk 8 — reuse), `pseudoRandSample3D.m` (likewise),
-`sampleDenseNeurons.m`, `isolateVisibleSomas.m`, `teardrop_poj.m`. Replace
-`S2_Sampling_Suite` with sphere-surface sampling via uniform random
-rotations (Marsaglia / `randn`). Implement GP soma roughness directly
-with Karhunen–Loève / Cholesky factorisation. Target file:
-`src/volume/somata.jl`.
+**Chunk 10 — Volume III: dendrites.** Port `dendrite_dijkstra2.m`,
+`dendrite_randomwalk2.m`, `growNeuronDendrites.m`,
+`growApicalDendrites.m`, `getDendritePath2.m`,
+`dilateDendritePathAll.m`. Reimplement the C++ MEX kernels
+(`dendrite_dijkstra_cpp.cpp`, `dendrite_randomwalk_cpp.cpp`,
+`locate_neighbors.cpp`, `array_SubMod.cpp`, `array_SubSub.cpp`) in
+pure Julia. **Also pull in the deferred `smoothCellBody.m` and
+`setCellFluoresence.m`** — both need dendrite outputs (`allpaths`,
+`neur_num_AD`). Target file: `src/volume/dendrites.jl`.
 
 Tests should cover:
 
-- Neuron count matches `N_neur` from `VolumeParams.finalize!`.
-- Minimum pairwise distance respected (`vol_params.min_dist`).
-- Eccentricity bounded by `eccen`.
-- Nucleus fluorescence ratio matches `nuc_fluorsc`.
+- Dendrites originate from soma boundaries (paths start in `neur_soma`).
+- Reach apical targets (top of volume for apical dendrites).
+- Thickness profile decays per `dendrite_tau`.
 
 ## Watch out for
 
-- **`pseudo_rand_sample_2d` / `pseudo_rand_sample_3d` are now public**
-  and already wired through. Reuse from Chunk 9 directly; don't re-port.
-- **Vessel mask shape from Chunk 8** is `(vol_sz[1]*vres,
-  vol_sz[2]*vres, (vol_sz[3] + vol_depth)*vres)`, with z increasing
-  into the brain. Soma generation should be in the brain-tissue
-  half-volume `vol_sz[3]*vres` (offset by `vol_depth*vres`).
-- **`Graphs.jl` is in `[deps]` but unused.** Chunks 9–12 may still
-  need it; if so, leave the import in `src/NAOMi.jl`. If by Chunk 13
-  no chunk actually uses it, consider removing.
-- **Don't rename or "fix" `VesselNode` / `VesselEdge` field names** —
-  preserve the upstream-aligned convention (per the working-knowledge
-  rule about field-name fidelity).
-- **`MersenneTwister` reproducibility on Julia 1.12** is still
-  fragile for some stochastic tests (Chunk 4 spatial correlation).
-  Chunk 9 should prefer fixed-seed tests with sufficient slack, and
-  run final `Pkg.test()` on Julia 1.10 LTS.
-- **The first call to `simulate_blood_vessels` takes ~0.5s on a
-  modest volume** due to compilation, but subsequent calls are
-  ~0.1s. If Chunk 9+ needs to call into vasculature for soma
-  rejection (somata avoiding vessels), expect noticeable test
-  runtimes at realistic volumes.
+- **Soma meshes are now per-cell `Vector{Matrix{Float64}}`** instead
+  of upstream's `Nx3xK` 3-D array. Dendrite code should iterate
+  `Vcells[k]`, not `Vcell(:, :, k)`. Recorded as working knowledge.
+- **No `Tri` triangulation matrix.** If dendrite code reaches into
+  the soma mesh structure for triangulation, it must either compute
+  it on demand or use the star-shape radial helper `point_in_soma`.
+- **Dendrite voxel rasterization will need to fight with the existing
+  `neur_soma` mask** to avoid overwriting soma voxels. Use
+  `neur_soma .> 0` as the soma occupancy guard.
+- **MEX C++ kernels are tightly coded with raw pointer arithmetic.**
+  Read them carefully — they manage 3-D voxel indices via custom
+  `array_SubMod` / `array_SubSub` helpers that translate between
+  flat 1-D indexing and 3-D triples. Julia's `CartesianIndices` does
+  this idiomatically.
+- **`masked_3d_gp` is already in place** for the eventual
+  `setCellFluoresence` port. Reuse it; do not re-port.
+- **Aim for tight test runtimes.** `generate_neural_volume` is now a
+  load-bearing step in volume-level tests and runs in <1 s for
+  60×60×30 µm volumes at vres=2. If Chunk 10 adds heavier
+  rasterization, consider smaller test volumes (40×40×20 µm with
+  N_neur=3 still gives meaningful coverage).
 
 ## Working stance reminder
 
 `ANALYSIS_PLAN.md` "Working stance" authorises autonomous chunk
 progression with auto-commits, halting when context drops below 50 %
-free or on any blocked chunk. Chunk 9 begins the soma generation
-sub-pipeline and is roughly comparable in scope to Chunk 8.
+free or on any blocked chunk.
 
 ## Suggested next workflow
 

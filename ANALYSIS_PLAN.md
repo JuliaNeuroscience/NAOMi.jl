@@ -17,7 +17,7 @@ session.
 |     6 | Optics II — Zernike + back-aperture         | complete    |
 |     7 | Optics III — Fresnel propagation            | complete    |
 |     8 | Volume I — vasculature                      | complete    |
-|     9 | Volume II — soma generation                 | pending     |
+|     9 | Volume II — soma generation                 | complete    |
 |    10 | Volume III — dendrites                      | pending     |
 |    11 | Volume IV — axons + neuropil background     | pending     |
 |    12 | Volume V — top-level orchestration          | pending     |
@@ -501,6 +501,64 @@ Karhunen–Loève / Cholesky factorization.
 respected; eccentricity bounded by `eccen`; nucleus fluorescence ratio
 matches `nuc_fluorsc`.
 
+**Notes**: All implemented in `src/volume/somata.jl`. Public exports:
+`spiral_sample_sphere`, `teardrop_projection`, `generate_neural_body`,
+`sample_dense_neurons`, `generate_neural_volume`, `isolate_visible_somas`,
+`point_in_soma`, `masked_3d_gp`. Also implemented:
+`generate_neural_volume` (was upstream `generateNeuralVolume.m`,
+formally Chunk 12 scope but the rasterization step is the natural
+bridge from soma meshes to voxel masks and could not be sensibly
+deferred). `masked_3d_gp` ported now because it is standalone (FFT-based
+GP sampler used by future fluorescence/dendrite chunks).
+`LinearAlgebra` added to `[deps]` for `cholesky` and `eigmin`.
+
+**Deviations from upstream and the original chunk plan**:
+
+- **Used `SpiralSampleSphere` (golden-angle deterministic spiral)
+  rather than the chunk-plan-suggested Marsaglia random sampling.**
+  Spiral sampling preserves upstream's "compute one sphere sampling
+  once, reuse for every cell" reuse pattern, which Marsaglia random
+  sampling would defeat. The geodesic-distance matrix is also computed
+  once and reused across all cells.
+- **Triangulation matrix `Tri` not ported.** Upstream `SpiralSampleSphere`
+  returns `Tri = fliplr(convhulln(V))` (MATLAB convex hull) and uses
+  it via `intriangulation(Vcell, Tri, points)` in
+  `generateNeuralVolume.m`. The Julia port replaces this with a star-
+  shape radial point-in-soma test (`point_in_soma`): for each voxel,
+  find the surface vertex whose direction (from the soma centre) is
+  closest to that of the voxel, then test radii. Equivalent for
+  star-shaped meshes (every soma in NAOMi is star-shaped around its
+  centre); avoids adding `Quickhull.jl` or `MiniQhull.jl` as a
+  dependency. ~7° angular sampling at `n_samps = 200`.
+- **`smoothCellBody.m` not ported here — moved to Chunk 10.** It
+  takes `allpaths` (dendrite paths) and `cellBody` (voxel indices) as
+  input; the algorithm smooths the soma-boundary near where dendrites
+  attach. With no `allpaths` until dendrites are generated, the
+  function would have no input. It will land naturally in Chunk 10.
+- **`setCellFluoresence.m` not ported here — moved to Chunk 10 or 12.**
+  Requires `neur_num_AD` (apical dendrite map) which is a Chunk 10
+  output. Can technically be invoked with zeroed `neur_num_AD`, but
+  the resulting per-cell fluorescence map would lack the
+  dendrite-uniform branch.
+- **Nucleus volume normalisation uses an analytic star-shape volume
+  estimate** (`sum r³ · solid_angle / 3`) instead of MATLAB's
+  `convhull` volume. Accurate to within ~5 % for spherical meshes; the
+  result is then cubic-root scaled so multi-percent error in the
+  volume estimate translates to sub-percent error in the linear
+  scaling factor.
+- **`generate_neural_volume` adopts the soma rasterization from upstream
+  `generateNeuralVolume.m`**, including the rule that nucleus voxels
+  are excluded from the soma index map (`neur_soma`) and that
+  `neur_vol` is initialised to `neur_params.nuc_fluorsc` inside nuclei
+  only.
+- **`bsxfun(@plus, …, neur_locs.')` semantics preserved.** Upstream
+  shifts soma meshes from origin-centred to `neur_locs`-centred *after*
+  sampling all shapes. The Julia port does the same shift inside
+  `sample_dense_neurons` so callers receive already-shifted meshes.
+- **`isolate_visible_somas` uses Chunk 7's `width_estimate_3d`** for
+  the PSF half-width; the function reuses the already-ported
+  width-estimate fix (one-sample-spacing correction).
+
 ### Chunk 10 — Volume III: dendrites
 
 Port `dendrite_dijkstra2.m`, `dendrite_randomwalk2.m`,
@@ -704,6 +762,24 @@ statistics.
   500×500 µm `vol_sz`. Downstream chunks doing scale-tests must
   either use ≥150 µm side length plus reduced `sourceFreq`/`vesFreq`,
   or accept that small volumes produce capillary-only vasculature.
+- **2026-05-15 (CHUNK-009)**: Somata in this port are *star-shaped*
+  around their centre (every direction from `neur_locs[k]` hits the
+  boundary exactly once). The radial point-in-soma test
+  (`point_in_soma`) relies on this. If a downstream chunk introduces
+  non-star-shaped somata (e.g. by smoothing them against dendrites in
+  `smoothCellBody`-equivalent code), the rasterization in
+  `generate_neural_volume` will need to revisit this assumption — or
+  switch to a triangulation-based test.
+- **2026-05-15 (CHUNK-009)**: Sphere triangulation `Tri` (upstream's
+  `convhulln` output, reused across cells) is *not* produced by this
+  port. Downstream code that expected `vol_out.Tri` to exist must
+  either compute it from `V_master` on demand (e.g. via `Quickhull.jl`),
+  or rely on the radial-test rasterization paths added here. The
+  `Vcell` / `Vnuc` vertex meshes *are* present and stored per-cell.
+- **2026-05-15 (CHUNK-009)**: `sample_dense_neurons` returns
+  `Vcells::Vector{Matrix{Float64}}` with K entries (one per accepted
+  cell). Upstream MATLAB used a 3-D `Nx3xK` array. Downstream chunks
+  should iterate `Vcells[k]` instead of indexing `Vcell(:, :, k)`.
 - **2026-05-15 (CHUNK-008)**: Vessel `nodes[i].root` uses three reserved
   values: `> 0` = parent index, `0` = source/no parent, `-1` =
   deleted-or-orphan (faithful encoding of upstream's `[]` vs. `0`
@@ -732,4 +808,5 @@ statistics.
 - 2026-05-15 CHUNK-006 (Zernike + back-aperture)  → next: CHUNK-007
 - 2026-05-15 CHUNK-007 (Fresnel propagation kernel + collection mask) → next: CHUNK-008
 - 2026-05-15 CHUNK-008 (vasculature) → next: CHUNK-009
+- 2026-05-15 CHUNK-009 (soma generation + rasterization) → next: CHUNK-010
 
