@@ -7,144 +7,121 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-This session (auto-iterate mode, post-working-stance) ported **Chunks 3,
-4, 5, and 6** in four clean commits on `main`:
+**Chunk 7 — Optics III: Fresnel propagation + cortical mask.** Ported
+six standalone functions into `src/optics/propagation.jl`:
 
-- **Chunk 3** (`2a7cd9f`) — calcium dynamics + fluorescence transduction:
-  `make_doub_exp_kernel`, `make_calcium_impulse`, `calcium_dynamics`
-  (three `sat_type` branches), `fluorescence` (10 indicator-protein
-  Hill curves). Hand-rolled AR-impulse + convolution (no DSP.jl,
-  no ControlSystems.jl).
-- **Chunk 4** (`33abe49`) — top-level traces + Hawkes correlation:
-  `samp_small_world_mat`, `expression_variation`,
-  `gen_correlated_spike_trains` (discrete-flag only — continuous-time
-  Hawkes via `markpointproc` is deferred since the standard pipeline
-  never uses it), and `generate_time_traces` orchestrating all five
-  `dyn_type` branches with per-compartment `ext_rate` / `ext_mult`
-  overrides. Internal simulation at 100 Hz with linear-interp resample
-  to the user's `dt` (polyphase deferred).
-- **Chunk 5** (`390994c`) — Gaussian PSF kernels:
-  `gaussian_psf`, `gaussian_psf_na`, `gaussian_beam_size`,
-  `generate_gaussian_profile`. Analytic evaluations on a grid; no FFTs
-  yet. `PSFContext` from the original plan was dropped (nothing to
-  cache without FFT plans).
-- **Chunk 6** (`67bf67a`) — Zernike + back-aperture:
-  `zernike_polynomial` (Noll-indexed, hand-rolled), `generate_zernike_weights`,
-  `apply_zernike`, `generate_back_aperture` (simple path of upstream
-  `generateBA.m`; the spatially-varying cell-array branch is deferred
-  and has a latent normalisation bug to fix on porting).
+- `fresnel_propagation_multi` — Schmidt (2010) two-step angular-spectrum
+  propagator with optional per-plane stack output and cached FFT plans.
+- `group_z_project` — block-wise reduction along axis 3 with
+  `:sum, :prod, :mean, :max, :min` (median/mode upstream branches
+  not exercised; deferred).
+- `width_estimate` / `width_estimate_3d` — linear-interpolation
+  FWHM (and arbitrary-fraction width). **Upstream one-sample bug
+  fixed.**
+- `tpm_signal_scale` — Xu–Webb two-photon photon-flux formula.
+- `collection_mask` — collection-side hemoglobin absorption through
+  the vasculature using a depth-dependent cone-of-collection
+  convolution (`10^(-density · hemoabs / vres)`).
 
-325 tests pass (started this session at 156; +169 over four chunks).
+The two top-level orchestrators (`genCorticalLightPath`/`Lite` and
+`simulate_optical_propagation`) are **deferred to Chunk 13** (scanning
+— first consumer that actually needs spatially-varying excitation
+masks). See `ANALYSIS_PLAN.md` Chunk-7 Notes for full deviation list.
+
+361 tests pass on Julia 1.10 LTS (the standard verification target).
+Started at 325; +36 over this chunk.
 
 ## Key decisions made
 
-- **All four chunks honour the working-stance "preserve upstream names
-  for struct fields" / "snake-case Julia function names" pattern.**
-- **No new dependencies added.** Hand-rolled: AR impulse, double-exp
-  kernel, convolution, polyphase-replacement linear interp, Zernike
-  radial polynomial, small-world graph, full Hawkes discrete approx.
-- **Out-of-scope deferrals identified during porting and recorded in
-  the plan**: streaming `genNext*` (LowRAM only), continuous-time
-  Hawkes path, polyphase resampling, `generateBA.m` cell-array
-  branch, `psf_params.zernikeDst`, AR1/AR2 dispatch in
-  `calcium_dynamics.m` (those AR branches *do* live in
-  `generate_time_traces` at the higher level).
+- **Scope split: core kernels in, orchestrators deferred.** The full
+  per-tile cortical-light-path code is several hundred lines of
+  upstream MATLAB with branches we don't yet exercise (vtwins,
+  bessel, temporal-focusing, fastmask, fineSamp, struct-Uin). Porting
+  the standalone kernels lets Chunk 8–12 (volume generation) proceed
+  without blocking on the orchestrator.
+- **Fixed the upstream `widthestimate.m` one-sample bug.** The
+  expression `s1 + s2 + sum(greater)` is one sample-spacing too wide
+  vs. the correct `s1 + s2 + (sum(greater) − 1)`. Verified against
+  the analytic FWHM of a sampled Gaussian.
+- **Hand-rolled disk-kernel correlation for `collection_mask`** rather
+  than calling `ImageFiltering.imfilter`. Kernel sums to unity, zero
+  padding outside the array — matches MATLAB `conv2(...,'same')`
+  semantics. Easy to swap if profiling shows it's a hot path.
+- **No `Statistics` dependency added** — `group_z_project(:mean)`
+  computes `sum(view)/length(view)` inline. (`mean` is stdlib but
+  not in `[deps]`.)
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/timetraces/calcium.jl`, `src/timetraces/traces.jl`,
-    `src/optics/psf.jl`, `src/optics/zernike.jl` (all four populated
-    from placeholders).
-  - `test/timetraces/test_calcium.jl`, `test/timetraces/test_traces.jl`,
-    `test/optics/test_psf.jl`, `test/optics/test_zernike.jl` (all new).
-  - `test/runtests.jl` — includes the four new test files.
+  - `src/optics/propagation.jl` — populated (was placeholder).
+  - `src/NAOMi.jl` — added `using FFTW`.
+  - `test/optics/test_propagation.jl` — new (36 tests).
+  - `test/runtests.jl` — includes the new test file.
   - `ANALYSIS_PLAN.md` — chunk-status table updated, deviations and
-    working-knowledge entries added per chunk, session-ledger
-    populated.
-  - `.claude/settings.json` — git-allowlist (untracked; in global
-    `.gitignore`).
+    working-knowledge entries added.
 - Package loads cleanly: yes.
-- Test suite passes: yes (325 tests).
-- Entry point(s): none yet; Chunks 7–17 build up the simulation
+- Test suite passes: yes — `Pkg.test()` on Julia 1.10 LTS shows
+  361/361 passing.
+- Test suite on Julia 1.12: 360/361. The one failure is the
+  pre-existing `gen_correlated_spike_trains — spatial correlation`
+  test from Chunk 4 (verified failing on baseline `5b67474` too),
+  caused by RNG-sensitivity in newer Distributions on 1.12.
+  *Not* introduced by Chunk 7. Recorded in plan working knowledge.
+- Entry point(s): none yet; Chunks 8–17 build up the simulation
   pipeline.
-- Known issues: none.
+- Known issues: none for Chunk 7.
 
 ## Next chunk
 
-**Chunk 7 — Optics III: Fresnel propagation + cortical mask.** Spans
-9 upstream files:
+**Chunk 8 — Volume I: vasculature.** Port `growMajorVessels.m`,
+`growCapillaries.m`, `simulatebloodvessels.m`, `vessel_dijkstra.m`.
+Use `Graphs.jl` (+ `SimpleWeightedGraphs` if needed) for routing.
+Target file: `src/volume/vasculature.jl`.
 
-1. `fresnel_propagation_multi.m` — multi-step angular-spectrum
-   propagation; the heart of the FFT-based optics.
-2. `genCorticalLightPath.m` and `genCorticalLightPathLite.m` — full
-   and reduced versions of the propagation through the vasculature/
-   tissue mask.
-3. `simulate_optical_propagation.m` — top-level orchestrator that
-   builds the PSF volume by propagating through depth slices.
-4. `tpmSignalscale.m` — photon-scaling for the two-photon
-   `TPMParams.phi` field.
-5. `widthestimate.m`, `widthestimate3D.m` — measure focal-spot
-   width (FWHM, e², ...) for the propagated PSF.
-6. `groupzproject.m` — z-projection of the PSF volume (max- or
-   sum-project for downstream consumers).
-7. `setOpticalParams.m` — caches `vol_params.vasc_sz` and computes
-   the back-aperture once.
+Tests should cover:
 
-This is the first chunk that actually needs FFTs — `FFTW.jl` is
-already in `Project.toml`. A `PSFContext` (or similar) caching
-struct *probably* makes sense now for FFT plans, the back-aperture
-field, and the propagation grids. Target file: `src/optics/propagation.jl`.
+- Vessel mask coverage within plausible range (~2–5% volume fraction).
+- No orphan capillaries (all connected to the major-vessel graph).
+- Surface vasculature density matches `VasculatureParams.vesFreq`.
 
-Inputs: `PSFParams`, `VolumeParams`, `TPMParams`, and the vasculature
-mask from Chunk 8. For Chunk 7, the vasculature can be a stand-in
-(a uniform-attenuation block or trivially-segmented synthetic mask).
-
-Tests:
-
-- PSF in vacuum (empty mask, no aberrations) ≈ the Chunk 5 PSF;
-  shapes match.
-- Attenuation increases monotonically with depth when the mask has
-  uniform absorption.
-- Hemoglobin absorption integrates against the upstream-default
-  `hemoabs = 0.00674·ln(10)` constant.
-- Total power is preserved by `fresnel_propagation_multi` on a
-  small grid (FFT-based propagation is energy-conserving).
+This is the first **Volume** chunk and the upstream code is dense
+graph-routing. The vessel mask from this chunk eventually feeds
+`collection_mask` (this chunk) and the deferred light-path
+orchestrators (Chunk 13).
 
 ## Watch out for
 
-- **FFT length and plan reuse**: building a fresh plan per slice is
-  expensive. A `PSFContext` (or local closure) holding the plan
-  reduces by ~100× when looping over depth.
-- **Off-by-one with `gaussian_psf` vs `gaussian_psf_na`** (recorded in
-  plan working knowledge): the centre index differs by one between
-  the two functions. Be deliberate about which one Chunk 7's tests
-  compare against.
-- **`generate_back_aperture` returns a square complex array sized by
-  `vasc_sz`**. For a small synthetic volume (`vol_sz = [20, 20, 10]`)
-  the grid is already ~1856². Use the smallest test volumes that
-  exercise the code (avoid blowing the test runner's memory).
-- **Upstream uses `single` (Float32)` throughout** for memory.
-  Chunks 3–6 use `Float64`. If Chunk 7's grids get too big consider
-  switching the propagation kernels to `Float32` — but verify
-  test tolerances first.
-- **`hemoabs` is in `PSFParams` already** (Chunk 1) as `0.00674·log(10)`.
-  Use that value verbatim.
-- **`setOpticalParams.m` likely caches `vol_params.vasc_sz`** as a
-  mutable field. Adding a `vasc_sz::Union{Nothing,Vector{Float64}}`
-  field to `VolumeParams` is reasonable; alternatively keep it in a
-  new `OpticalContext` struct so `VolumeParams` stays clean.
-- **Continuous-time Hawkes deferred from Chunk 4**: `markpointproc`
-  from Chunk 2 is exported and ready to use, but no caller exercises
-  it yet — keep an eye out if Chunk 7's tests benefit from a more
-  Poisson-like spike pattern.
+- **`SimpleWeightedGraphs` not yet in deps.** If the Dijkstra
+  implementation needs edge weights beyond `Graphs.jl`'s defaults,
+  add it under `[deps]` with a compat bound compatible with Julia
+  1.10 LTS.
+- **`gennode.m` / `delnode.m` / `branchGrowNodes.m`** (listed in
+  Chunk 12) overlap with Chunk 8's vessel-growth logic. Coordinate
+  scope so the Chunk 12 orchestrator stays thin.
+- **The `inpaint_nans` external dependency.** Chunk 9 references it
+  via upstream `genCorticalLightPathLite`; Chunk 8 *may* also touch
+  it for vessel-mask interpolation. If so, port the simple Laplacian
+  inpaint inline rather than adding a dep — it's only a few dozen
+  lines.
+- **Volume sizes in tests must stay small.** A 30×30×30 µm volume
+  at `vres = 2` is `60³ ≈ 216 k` voxels — fine. A 100×100×30 at
+  vres=2 is 1.2 M voxels, slow for routine tests.
+- **Coordinate convention** in upstream is (i, j, k) = (x, y, z)
+  with z increasing into the brain. Keep that — Chunk 7's
+  `collection_mask` expects vasculature volumes indexed the same way.
+- **Pkg.test() may re-resolve to Julia-1.12 versions** if the agent
+  runs on `julia +1`; the resulting RNG flake in Chunk 4's
+  correlation test is a known issue (recorded in plan). Run final
+  verification with `julia` (LTS 1.10) for green-status reporting.
 
 ## Working stance reminder
 
 `ANALYSIS_PLAN.md` "Working stance" authorises autonomous chunk
 progression with auto-commits, halting when context drops below 50 %
-free or on any blocked chunk. Chunk 7 spans 9 upstream files (vs the
-3–4 of Chunks 3–6) and is the right time for a fresh-context start.
+free or on any blocked chunk. Chunk 8 is the start of the Volume
+sub-pipeline (Chunks 8–12); each volume chunk is ~3–5 upstream files,
+moderate scope.
 
 ## Suggested next workflow
 

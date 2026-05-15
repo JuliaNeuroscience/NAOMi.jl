@@ -8,4 +8,5 @@ using Test
     include("timetraces/test_traces.jl")
     include("optics/test_psf.jl")
     include("optics/test_zernike.jl")
+    include("optics/test_propagation.jl")
 end

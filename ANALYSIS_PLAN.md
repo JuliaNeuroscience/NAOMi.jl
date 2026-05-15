@@ -15,7 +15,7 @@ session.
 |     4 | TimeTraces III — top-level + correlation    | complete    |
 |     5 | Optics I — PSF kernels                      | complete    |
 |     6 | Optics II — Zernike + back-aperture         | complete    |
-|     7 | Optics III — Fresnel propagation            | pending     |
+|     7 | Optics III — Fresnel propagation            | complete    |
 |     8 | Volume I — vasculature                      | pending     |
 |     9 | Volume II — soma generation                 | pending     |
 |    10 | Volume III — dendrites                      | pending     |
@@ -376,6 +376,59 @@ Port `fresnel_propagation_multi.m`, `genCorticalLightPath.m`,
 increases monotonically with depth; hemoglobin absorption integrates
 against the upstream-default `hemoabs = 0.00674·ln(10)` constant.
 
+**Notes**: Ported into `src/optics/propagation.jl`. Public exports:
+`fresnel_propagation_multi`, `group_z_project`, `width_estimate`,
+`width_estimate_3d`, `tpm_signal_scale`, `collection_mask`.
+
+**Deviations from the original plan** (recorded so Chunk 13+ knows what
+is still missing):
+
+- **`genCorticalLightPath.m` and `genCorticalLightPathLite.m` not
+  ported in this chunk.** The full per-tile cortical-light-path
+  orchestrators (super-Gaussian apodisation + i,j tile loop + two-stage
+  A→B[→C] propagation + per-tile downsampling/`imresize` + temporal
+  focusing) are deferred to the chunk that first needs spatially-varying
+  excitation masks (Chunk 13 — scanning). Until then, the standalone
+  `fresnel_propagation_multi` plus `generate_back_aperture` (Chunk 6)
+  is enough to test single-tile propagation. The `fastmask` /
+  `fineSamp` paths in the Lite version are deferred indefinitely.
+- **`simulate_optical_propagation.m` top-level orchestrator not
+  ported.** Same reason. The standalone `collection_mask` covers the
+  collection-side hemoabs computation (the part of upstream lines
+  415–442 that the test plan asked about). The `acc_flag = 1` /
+  `fastmask = true` branches, the struct-`Uin` (vtwins/bessel)
+  branches, and the scatter-volume injection (depends on
+  `masked_3DGP_test` Gaussian-process scatter, not yet ported) are
+  deferred.
+- **`setOpticalParams.m` is *misnamed* in upstream** — its body is the
+  unrelated `TPM_Simulation_Parameters` opt-type selector. The actual
+  `vol_params.vasc_sz` cache lives inline at lines 45–46 of
+  `simulate_optical_propagation.m`; it will be reproduced when the
+  top-level orchestrator is ported.
+- **`groupzproject.m`'s `median` / `mode` types not ported.** The
+  standard pipeline only invokes `:sum`, `:prod`, `:mean`, `:max`,
+  `:min`; tests cover those five. `:median` / `:mode` are upstream
+  options never exercised by the standard pipeline.
+- **`widthestimate.m` upstream bug fixed.** Upstream returns
+  `s1 + s2 + (f2 − f1)` for the interpolated FWHM, which is one
+  sample-spacing too wide (the correct interior span between the
+  two threshold crossings is `(f2 − f1 − 1) + s1 + s2`). The
+  Julia port returns the corrected width; verified against the
+  analytic FWHM of a sampled Gaussian to ~5 % on a 51-point grid.
+- **Schmidt's two-step sampling.** `fresnel_propagation_multi`
+  requires the source/observation grid spacings `(D1, D2)` to be
+  related by `D1 · D2 · N = λ_med · z` for the Fourier-step to land
+  at the right plane. Upstream `genCorticalLightPath` enforces this
+  in its own setup; downstream callers must do the same.
+- **Energy conservation is exact.** Tests confirm
+  `∫|Uin|²·D1² ≈ ∫|Uout|²·D2²` to ~1e-15 relative — useful for
+  catching FFT-shift bugs in future propagator variants.
+- **Collection-mask convolution is hand-rolled** (`_disk_kernel` +
+  `_conv2_same`) to avoid forcing `ImageFiltering` semantics through
+  the simulate code; matches MATLAB `conv2(...,'same')` with
+  zero-padded boundaries and a symmetric kernel. If profile shows
+  it as a hot spot, swap in `ImageFiltering.imfilter`.
+
 ### Chunk 8 — Volume I: vasculature
 
 Port `growMajorVessels.m`, `growCapillaries.m`, `simulatebloodvessels.m`,
@@ -571,6 +624,37 @@ statistics.
   use different coordinate indexing — the former centers the origin
   on index `round(N/2)`, the latter on `round(N/2) + 1`. Downstream
   code consuming PSF arrays must derive the center per-function.
+- **2026-05-15 (CHUNK-007)**: `fresnel_propagation_multi` follows
+  Schmidt (2010) two-step angular-spectrum sampling: source and
+  observation grid spacings `D1`, `D2` over `N` samples must satisfy
+  `D1 · D2 · N = λ_med · z` (with `λ_med = λ / nidx`) for the focal
+  spot to land at the observation plane and be Nyquist-sampled.
+  Upstream `genCorticalLightPath` derives `D1` from
+  `gaussian_beam_size(psf_params, fl*1e6)/min(N)`; downstream
+  callers (Chunk 13+) must do the same.
+- **2026-05-15 (CHUNK-007)**: Upstream `widthestimate.m` overestimates
+  the interpolated FWHM by exactly one sample-spacing. The Julia
+  port fixes the bug; if any downstream test or numerical result is
+  cross-checked against MATLAB output, expect a one-sample
+  discrepancy in widths.
+- **2026-05-15 (CHUNK-007)**: Upstream `setOpticalParams.m` in the
+  bitbucket repo *contains the body of `TPM_Simulation_Parameters`*
+  — the actual vasc_sz caching code lives inline at the top of
+  `simulate_optical_propagation.m`. If a future port re-derives
+  `vasc_sz` it should match
+  `gaussian_beam_size(psf, vol_depth + vol_sz[3]/2) +
+  [vol_sz[1], vol_sz[2], vol_depth]` (i.e. the size 3 axis adds
+  `vol_depth` only, not `vol_depth/2`).
+- **2026-05-15 (CHUNK-007)**: `Pkg.test()` re-resolves dependencies
+  and may pick up newer versions; some stochastic tests
+  (Chunk 4 `gen_correlated_spike_trains — spatial correlation`)
+  fail on Julia 1.12 with the resolved-newer Distributions because
+  `MersenneTwister` produces different draws when downstream
+  sampling algorithms change. The tests pass on Julia 1.10 LTS
+  (the documented default). Future chunks should either widen the
+  random seeds (e.g. average over multiple) or accept the
+  Julia-1.10-LTS-only verification convention used by the
+  per-chunk `Pkg.test()` runs.
 
 ## Session ledger
 
@@ -581,4 +665,5 @@ statistics.
 - 2026-05-15 CHUNK-004 (top-level traces + Hawkes) → next: CHUNK-005
 - 2026-05-15 CHUNK-005 (Gaussian PSF kernels)     → next: CHUNK-006
 - 2026-05-15 CHUNK-006 (Zernike + back-aperture)  → next: CHUNK-007
+- 2026-05-15 CHUNK-007 (Fresnel propagation kernel + collection mask) → next: CHUNK-008
 
