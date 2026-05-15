@@ -16,4 +16,5 @@ using Test
     include("volume/test_volume.jl")
     include("scanning/test_psf_fft.jl")
     include("scanning/test_noise.jl")
+    include("scanning/test_scan.jl")
 end

@@ -23,7 +23,7 @@ session.
 |    12 | Volume V — top-level orchestration          | complete    |
 |    13 | Scanning I — PSF FFT + single-frame scan    | complete    |
 |    14 | Scanning II — noise model                   | complete    |
-|    15 | Scanning III — full scan + motion           | pending     |
+|    15 | Scanning III — full scan + motion           | complete    |
 |    16 | Ideal components + ground truth             | pending     |
 |    17 | I/O + reference demo script                 | pending     |
 |    18 | Documentation pass                          | pending     |
@@ -759,6 +759,30 @@ uses AR-1 jitter per upstream.
 intensity stable across frames; motion off → frames identical; motion on →
 frame-to-frame shifts bounded.
 
+**Notes**: Implemented in `src/scanning/scan.jl`. Public exports:
+`scan_volume`, `img_sub_row_shift`. End-to-end scan (volume +
+single-frame scan + noise) of a tiny 30×30×20 µm volume over 3 frames
+runs in <1s. All four chunk-test goals verified.
+
+**Deviations from upstream**:
+
+- **`blurredBackComp2.m` not ported.** It depends on the temporal-
+  focusing scattering background (`psfT`/`psfB`) which requires the
+  cortical-light-path orchestrator deferred from Chunk 7.
+- **TIFF streaming paths skipped** (Chunk 17 will add). The
+  `scan_params.fsimPath` / `fsimCleanPath` upstream output paths are
+  not ported; callers consume the in-memory movie directly.
+- **Motion model matches upstream's small-step sampler:** per-frame
+  small Bernoulli/uniform x/y/z jitter (`d_stps`, `d_stpsZ`, `d_stps2`,
+  `p_jump`); per-row shearing vector of length `H` with random shear
+  slope. `return_motion=true` returns the `3 × nt` history.
+- **`scan_volume` returns plain `mov`** by default; with
+  `return_clean=true` returns `(mov, mov_clean)`; with
+  `return_motion=true` returns `(mov, mot_hist)`; both → 3-tuple.
+- **`img_sub_row_shift` uses linear interpolation** between integer-
+  shift rows/columns and pads with `NaN32` for out-of-bounds samples
+  (mapped to zero in the output).
+
 ### Chunk 16 — Ideal components + ground truth
 
 Port `calculateIdealComps.m`, `scan_ideal.m`, `times_from_profs.m`,
@@ -974,4 +998,5 @@ statistics.
 - 2026-05-15 CHUNK-012 (top-level neural volume orchestrator) → next: CHUNK-013
 - 2026-05-15 CHUNK-013 (PSF FFT + single-frame scan) → next: CHUNK-014
 - 2026-05-15 CHUNK-014 (Poisson-Gauss noise + pixel bleed) → next: CHUNK-015
+- 2026-05-15 CHUNK-015 (full scan + motion) → next: CHUNK-016
 

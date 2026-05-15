@@ -7,62 +7,64 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 14 — Scanning II: noise model.** Ported into
-`src/scanning/noise.jl`:
+**Chunk 15 — Scanning III: full scan + motion.** Ported into
+`src/scanning/scan.jl`:
 
-- `poisson_gauss_noise` — per-frame Poisson + lognormal + Gaussian
-  measurement noise.
-- `pixel_bleed` — per-pixel electronic bleed-through to the next
-  scanned pixel.
-- `apply_noise_model` — frame-by-frame movie application.
+- `scan_volume` — full multi-frame scan loop with AR-1-like motion
+  jitter and Poisson-Gauss noise application.
+- `img_sub_row_shift` — per-row fractional x/y shift + buffer crop.
 
-Tests verify empirical mean and variance against analytic Poisson-
-Gauss predictions; both match within 5 %/10 %.
+End-to-end (volume → 3-frame movie with noise) runs in <1 s on the
+30×30×20 µm test volume.
 
-622 tests pass on Julia 1.10 LTS; +16 over Chunk 13.
+633 tests pass on Julia 1.10 LTS; +11 over Chunk 14.
 
 ## Key decisions made
 
-- **Dynode-chain branch not ported.** Upstream's `applyNoiseModel.m`
-  has a separate `noise_params.type == 'dynode'` path; the standard
-  pipeline never uses it.
-- **`Distributions.Poisson` used** for sampling; `exp(μ2 + σ2·randn)`
-  replaces MATLAB `lognrnd`. No new deps.
+- **`blurredBackComp2.m` not ported.** Depends on `psfT`/`psfB`
+  temporal-focusing scattering background, which requires the
+  cortical-light-path orchestrator deferred from Chunk 7.
+- **TIFF streaming output paths skipped.** Chunk 17 will add them.
+- **Motion model preserves upstream's small-step sampler.** Per-frame
+  Bernoulli jumps + small uniform jitter + per-row shear vector; the
+  3×nt history returns via `return_motion=true`.
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/scanning/noise.jl` — populated (was placeholder; +110 LOC).
-  - `test/scanning/test_noise.jl` — new (+16 tests).
+  - `src/scanning/scan.jl` — populated (was placeholder; +210 LOC).
+  - `test/scanning/test_scan.jl` — new (+11 tests).
   - `test/runtests.jl` — includes the new test file.
-  - `ANALYSIS_PLAN.md` — chunk-status table updated + chunk-14
+  - `ANALYSIS_PLAN.md` — chunk-status table updated + chunk-15
     notes/deviations + ledger entry.
 - Package loads cleanly: yes.
-- Test suite passes: yes — 622/622 on Julia 1.10 LTS.
-- Entry point(s): volume + single frame + noise all wired.
+- Test suite passes: yes — 633/633 on Julia 1.10 LTS.
+- Entry point(s): **the full scanning pipeline now works end-to-end**.
+  A user can call `simulate_neural_volume` → `scan_volume` and obtain
+  a movie.
 
 ## Next chunk
 
-**Chunk 15 — Scanning III: full scan + motion.** Port `scan_volume.m`,
-`imgSubRowShift.m`, `blurredBackComp2.m`. The motion model uses AR-1
-jitter per upstream. Target file: `src/scanning/scan.jl`.
+**Chunk 16 — Ideal components + ground truth.** Port
+`calculateIdealComps.m`, `scan_ideal.m`, `times_from_profs.m`,
+`comps2ideals.m`, `constrainEstToSomas.m`. Target file:
+`src/scanning/ideal.jl`. These produce the "ideal" per-cell extracted
+fluorescence traces from a clean movie + soma masks — used to compare
+against downstream analysis pipelines (CNMF, Suite2P, etc).
 
-Tests should cover: end-to-end produces a `(H, W, T)` movie of the
-right shape; mean intensity stable across frames; motion off → frames
-identical; motion on → frame-to-frame shifts bounded.
+Tests should cover: ideal traces extracted from a synthetic movie and
+ideal profiles recover `neur_act.soma` to high correlation.
 
 ## Watch out for
 
-- **`scan_volume_frame` is already in place** (Chunk 13). Chunk 15's
-  `scan_volume!` is the outer loop that calls `scan_volume_frame` per
-  frame, applies motion, and applies the noise model.
-- **`imgSubRowShift` applies a per-row x-offset** — small Bresenham-
-  style shifts to model fast-axis tissue motion. Hand-rolled is fine
-  (~30 LOC).
-- **`blurredBackComp2` is the temporal-focusing scattering background
-  blur** that lives in `scan_volume_frame`. It depends on `psfT`/`psfB`
-  which are not yet ported (cortical-light-path orchestrator).
-  Chunk 15 can ship without it; flag as a deferred path.
+- **`scan_volume`'s clean output** is the natural input to the ideal
+  components chunk. Use `return_clean=true` to obtain `mov_clean`.
+- **`set_cell_fluorescence`'s `gp_vals[k].is_soma` bitvector** marks
+  which voxels are soma vs dendrite — the ideal-profile code needs
+  this distinction.
+- **Per-cell soma mask = projection of soma voxels onto the imaging
+  plane.** The chunk-16 code should pre-compute these 2-D masks from
+  the 3-D soma indices.
 
 ## Working stance reminder
 
