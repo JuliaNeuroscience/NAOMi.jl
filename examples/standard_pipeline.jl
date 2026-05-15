@@ -1,27 +1,57 @@
 # Reference end-to-end NAOMi pipeline.
 #
 # Julia translation of upstream `TPM_Simulation_Script_standard.m`
-# (Copyright 2021 Alex Song, Adam Charles, MIT). Scaled down to a small
+# (Copyright 2021 Alex Song, Adam Charles, MIT). Defaults to a small
 # 30 × 30 × 20 µm volume so it runs in well under two minutes; the
 # upstream script targets a 500 × 500 × 100 µm volume over 20 000 frames.
 #
-# Run with:  julia --project examples/standard_pipeline.jl
-# Output TIFFs land in a fresh temp directory (path printed at the end);
-# set the NAOMI_OUTPUT_DIR environment variable to override.
+# Usage:
+#   julia --project examples/standard_pipeline.jl [SX SY SZ [N_NEUR [NT]]]
+#
+#   SX SY SZ  volume size in microns          (default 30 30 20)
+#   N_NEUR    number of neurons               (default 3 at the default
+#             size; if a size is given without N_NEUR, the count is
+#             derived from neuron density, so larger volumes are
+#             automatically populated)
+#   NT        number of imaging frames        (default 60)
+#
+# Larger volumes take proportionally longer (volume generation and
+# scanning both scale with size). Output TIFFs land in a fresh temp
+# directory whose path is printed at the end; set the NAOMI_OUTPUT_DIR
+# environment variable to choose the location.
 
 using NAOMi
 using Random
 
-# --- Parameters ----------------------------------------------------------
-const SEED  = 1
-const NT    = 60          # number of imaging frames
-const VOLSZ = [30, 30, 20]  # volume size in microns
+# --- Command-line arguments ---------------------------------------------
+# Returns (vol_sz::Vector{Int}, n_neur::Int, nt::Int). `n_neur == 0` is the
+# "derive from density" sentinel resolved by `finalize!`.
+function parse_pipeline_args(args)
+    isempty(args) && return ([30, 30, 20], 3, 60)
+    length(args) >= 3 ||
+        error("Usage: standard_pipeline.jl [SX SY SZ [N_NEUR [NT]]]")
+    nums = tryparse.(Int, args)
+    any(isnothing, nums) &&
+        error("All arguments must be integers; got $(args)")
+    all(>(0), nums) || error("All arguments must be positive; got $(nums)")
+    vol_sz = nums[1:3]
+    n_neur = length(nums) >= 4 ? nums[4] : 0   # 0 → derive from density
+    nt     = length(nums) >= 5 ? nums[5] : 60
+    return vol_sz, n_neur, nt
+end
+
+const SEED = 1
+vol_sz, n_neur, nt = parse_pipeline_args(ARGS)
 
 rng = MersenneTwister(SEED)
 
-vol_params  = VolumeParams(vol_sz=VOLSZ, vol_depth=15.0, vres=2.0,
-                           min_dist=12.0, N_neur=3, N_bg=15)
-finalize!(vol_params)
+# Keep the volume centre comfortably below the brain surface.
+vol_depth = max(15.0, 0.5 * vol_sz[3] + 5)
+vol_params = VolumeParams(vol_sz=vol_sz, vol_depth=vol_depth, vres=2.0,
+                          min_dist=12.0, N_neur=n_neur, N_bg=1)
+finalize!(vol_params)                       # resolves N_neur if 0 was passed
+vol_params.N_bg = 5 * vol_params.N_neur     # background processes scale with cells
+
 neur_params = NeuronParams()
 vasc_params = VasculatureParams(sourceFreq=200.0, vesFreq=[60.0, 80.0, 30.0])
 dend_params = DendriteParams()
@@ -31,6 +61,9 @@ tpm_params  = TPMParams(pavg=20.0)
 finalize!(tpm_params)
 noise_params = NoiseParams()
 scan_params  = ScanParams(scan_buff=4, motion=true)
+
+println("Volume: $(vol_sz[1])×$(vol_sz[2])×$(vol_sz[3]) µm, " *
+        "$(vol_params.N_neur) neurons, $(nt) frames")
 
 # --- 1. Neural volume ----------------------------------------------------
 println("Simulating neural volume...")
@@ -48,18 +81,18 @@ psf = Float32.(psf ./ sum(psf))
 
 # --- 3. Temporal activity -----------------------------------------------
 println("Simulating temporal activity...")
-spike_opts = SpikeOptions(K=vol_params.N_neur, nt=NT, dt=1 / 30,
+spike_opts = SpikeOptions(K=vol_params.N_neur, nt=nt, dt=1 / 30,
                           rate=0.25, N_bg=axon_params.N_proc,
                           smod_flag=:independent)
 traces = generate_time_traces(rng, spike_opts)
 soma_act = Float32.(traces.soma)
 dend_act = traces.dend === nothing ? copy(soma_act) : Float32.(traces.dend)
 bg_act   = traces.bg   === nothing ?
-    fill(0.5f0, axon_params.N_proc, NT) : Float32.(traces.bg)
+    fill(0.5f0, axon_params.N_proc, nt) : Float32.(traces.bg)
 neur_act = (soma=soma_act, dend=dend_act, bg=bg_act)
 
 # --- 4. Scanning ---------------------------------------------------------
-println("Scanning volume ($(NT) frames)...")
+println("Scanning volume ($(nt) frames)...")
 t0 = time()
 mov, mov_clean = scan_volume(neur_vol, psf, neur_act, scan_params;
                              noise_params=noise_params, tpm_params=tpm_params,
