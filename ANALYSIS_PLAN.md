@@ -22,7 +22,7 @@ session.
 |    11 | Volume IV — axons + neuropil background     | complete    |
 |    12 | Volume V — top-level orchestration          | complete    |
 |    13 | Scanning I — PSF FFT + single-frame scan    | complete    |
-|    14 | Scanning II — noise model                   | pending     |
+|    14 | Scanning II — noise model                   | complete    |
 |    15 | Scanning III — full scan + motion           | pending     |
 |    16 | Ideal components + ground truth             | pending     |
 |    17 | I/O + reference demo script                 | pending     |
@@ -734,6 +734,22 @@ Port `PoissonGaussNoiseModel.m`, `applyNoiseModel.m`, `pixel_bleed.m`.
 **Tests**: empirical mean/variance of noise output match analytic
 Poisson-Gauss predictions across a `μ` sweep.
 
+**Notes**: Implemented in `src/scanning/noise.jl`. Public exports:
+`poisson_gauss_noise`, `pixel_bleed`, `apply_noise_model`. Tests
+verify empirical mean and variance against analytic Poisson-Gauss
+predictions (within 5 %/10 % respectively) for three intensity levels.
+
+**Deviations from upstream**:
+
+- **Dynode-chain noise branch not ported.** Upstream's
+  `applyNoiseModel.m` has a `noise_params.type == 'dynode'` branch
+  invoking `DynodeNoiseModel.m`. The standard pipeline never uses
+  this; ported only the default Poisson-Gauss branch.
+- **`Distributions.Poisson` used** for Poisson sampling rather than
+  hand-rolling `poissrnd`. `Distributions` is already in `[deps]`.
+- **`lognrnd` replaced by `exp(μ2 + σ2·randn)`.** Equivalent up to
+  numerical precision; no new dependency needed.
+
 ### Chunk 15 — Scanning III: full scan + motion
 
 Port `scan_volume.m`, `imgSubRowShift.m`, `blurredBackComp2.m`. Motion model
@@ -957,4 +973,5 @@ statistics.
 - 2026-05-15 CHUNK-011 (axons + neuropil background) → next: CHUNK-012
 - 2026-05-15 CHUNK-012 (top-level neural volume orchestrator) → next: CHUNK-013
 - 2026-05-15 CHUNK-013 (PSF FFT + single-frame scan) → next: CHUNK-014
+- 2026-05-15 CHUNK-014 (Poisson-Gauss noise + pixel bleed) → next: CHUNK-015
 
