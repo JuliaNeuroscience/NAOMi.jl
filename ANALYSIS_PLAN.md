@@ -21,7 +21,7 @@ session.
 |    10 | Volume III — dendrites                      | complete    |
 |    11 | Volume IV — axons + neuropil background     | complete    |
 |    12 | Volume V — top-level orchestration          | complete    |
-|    13 | Scanning I — PSF FFT + single-frame scan    | pending     |
+|    13 | Scanning I — PSF FFT + single-frame scan    | complete    |
 |    14 | Scanning II — noise model                   | pending     |
 |    15 | Scanning III — full scan + motion           | pending     |
 |    16 | Ideal components + ground truth             | pending     |
@@ -696,6 +696,37 @@ Port `psf_fft.m`, `single_scan.m`, `scan_volume_frame.m`,
 **Tests**: single-frame intensity at a known neuron location is positive
 and increases with `TPMParams.pavg`.
 
+**Notes**: Implemented in `src/scanning/psf_fft.jl`. Public exports:
+`psf_fft`, `single_scan`, `setup_scan_volume_frame`, `scan_volume_frame`,
+`ScanVolume`. Tests verify shape, reproducibility, and the
+`signal ∝ pavg²` Xu-Webb scaling.
+
+**Deviations from upstream**:
+
+- **Temporal-focusing scattering branch skipped.** Upstream's
+  `setup_scan_volume_frame.m` (lines 32-67) accepts `PSF_struct.psfT` /
+  `psfB` / `colmask` / `mask` for cortical-light-path scattering
+  background. These fields come from `genCorticalLightPath.m`, which
+  was deferred from Chunk 7. The Julia port supports a plain
+  `psf::Array{Real,3}` argument only; when the cortical-light-path
+  orchestrator lands, this code grows additional accept branches.
+- **`nearest_small_prime` factor-of-7 FFT-size bump skipped.** Julia's
+  FFTW handles arbitrary sizes; the upstream rounding-up to the
+  nearest small-prime size was purely a speed optimisation that
+  doesn't change the result.
+- **Motion model simplified.** Upstream's full motion model (small
+  per-row shifts, periodic large jumps, shear-vectors) lives mostly
+  in `scan_volume.m` (Chunk 15); `scan_volume_frame.m` only handles
+  z-drift, which is preserved here.
+- **Activity vector length tolerance.** `_coerce_activity`
+  right-pads per-cell activity vectors with zeros when shorter than
+  the registered cell count (`K_soma = N_neur + N_den + N_bg_dendrites`).
+  Useful because callers often track only soma activity for the
+  primary neurons but not for background-dendrite cells.
+- **`sfrac` binning supports integer values only** (sum-and-subsample);
+  fractional binning (upstream's `imresize` fallback) is not ported.
+  `ScanParams.sfrac` defaults to 2.
+
 ### Chunk 14 — Scanning II: noise model
 
 Port `PoissonGaussNoiseModel.m`, `applyNoiseModel.m`, `pixel_bleed.m`.
@@ -925,4 +956,5 @@ statistics.
 - 2026-05-15 CHUNK-010 (dendrites + smoothCellBody + setCellFluoresence) → next: CHUNK-011
 - 2026-05-15 CHUNK-011 (axons + neuropil background) → next: CHUNK-012
 - 2026-05-15 CHUNK-012 (top-level neural volume orchestrator) → next: CHUNK-013
+- 2026-05-15 CHUNK-013 (PSF FFT + single-frame scan) → next: CHUNK-014
 

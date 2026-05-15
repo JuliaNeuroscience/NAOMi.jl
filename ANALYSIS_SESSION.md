@@ -7,83 +7,74 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 12 — Volume V: top-level orchestration.** Ported
-`simulate_neural_volume.m` into `src/volume/volume.jl`. End-to-end
-generation of a 30×30×20 µm volume at `vres=2` (with vasculature,
-somata, dendrites, fluorescence, bg dendrites, and axon processes)
-runs in ~1 s. Output is a `NeuralVolume` struct mirroring upstream's
-`vol_out` fields.
+**Chunk 13 — Scanning I: PSF FFT + single-frame scan.** Ported into
+`src/scanning/psf_fft.jl`:
 
-`resampVolume.m` skipped (upstream stub). All other Chunk-12 helpers
-(`gennode`, `delnode`, `nodesToConn`, `genconn`, `connToVol`,
-`branchGrowNodes`) were already ported in Chunk 8.
+- `psf_fft` — 2-D FFT of a 3-D PSF with optional axial pre-summing.
+- `single_scan` — convolve a 3-D fluorescence volume with the PSF
+  (spatial or frequency domain) and return a 2-D image.
+- `setup_scan_volume_frame` — build a `ScanVolume` struct with per-cell
+  soma/dend/axon/nucleus voxel-and-value vectors plus the cached PSF
+  FFT.
+- `scan_volume_frame` — synthesize one scan frame; supports optional
+  `tpm_params` for Xu-Webb signal scaling.
+- `ScanVolume` — pre-processed scan struct.
 
-590 tests pass on Julia 1.10 LTS; +23 over Chunk 11.
+606 tests pass on Julia 1.10 LTS; +16 over Chunk 12.
 
 ## Key decisions made
 
-- **`NeuralVolume` struct**, not upstream's ad-hoc `vol_out`. All
-  upstream fields preserved verbatim, plus `Vcells`/`Vnucs` (mesh
-  data) for downstream consumers.
-- **Two small Chunk-8 bug fixes that surfaced only on small volumes**:
-  (a) `nv.nnodes` could exceed `length(nodes)` after late skipped
-  pushes — `vert_capp_idxs` comprehension now caps at `length(nodes)`.
-  (b) `cappmat[1:nvert_sum, 1:nvert_sum] .= Inf` now guards against
-  `nvert_sum > ncapp` (zero-capillary case). Both no-ops on
-  upstream-scale volumes; recorded in plan.
-- **`resampVolume.m` skipped** because it is an empty upstream stub.
-  Down­stream consumers needing volume resampling can call the
-  scanning-stage code instead.
+- **Temporal-focusing (psfT/psfB) and excitation-collection mask paths
+  skipped.** These depend on the cortical-light-path orchestrator
+  deferred from Chunk 7. When that lands, this code grows new accept
+  branches (no breaking changes).
+- **Activity-vector tolerance.** `_coerce_activity` right-pads per-cell
+  vectors with zeros when they are shorter than the cell count
+  tracked by the `ScanVolume`. This lets callers track soma activity
+  for primary neurons only and treat background-dendrite cells as
+  silent.
+- **`nearest_small_prime` FFT-size optimisation skipped.** Julia's
+  FFTW handles arbitrary sizes; this rounding was a MATLAB speed
+  trick.
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/volume/volume.jl` — populated (was placeholder; +130 LOC).
-  - `src/volume/vasculature.jl` — two small bug-fix patches.
-  - `test/volume/test_volume.jl` — new (+23 tests).
+  - `src/scanning/psf_fft.jl` — populated (was placeholder; +280 LOC).
+  - `test/scanning/test_psf_fft.jl` — new (+16 tests).
   - `test/runtests.jl` — includes the new test file.
-  - `ANALYSIS_PLAN.md` — chunk-status table updated + chunk-12
-    notes/deviations.
+  - `ANALYSIS_PLAN.md` — chunk-status table updated + chunk-13
+    notes/deviations + ledger entry.
 - Package loads cleanly: yes.
-- Test suite passes: yes — `Pkg.test()` on Julia 1.10 LTS shows
-  590/590 passing (was 567 before this chunk).
-- Entry point(s): `simulate_neural_volume` now exists end-to-end.
-  A user can construct `vol_params`, `neur_params`, `vasc_params`,
-  `dend_params`, `axon_params`, `bg_params` and obtain a full
-  `NeuralVolume`.
+- Test suite passes: yes — 606/606 on Julia 1.10 LTS (was 590).
+- Entry point(s): `simulate_neural_volume` + `setup_scan_volume_frame` +
+  `scan_volume_frame` work end-to-end. A user can now go from
+  parameters → volume → single scan frame.
 - Known issues: none introduced this chunk. Pre-existing Chunk-4
-  spatial-correlation flake on Julia 1.12 still pending.
+  Julia-1.12 RNG flake still pending.
 
 ## Next chunk
 
-**Chunk 13 — Scanning I: PSF FFT + single-frame scan.** Port
-`psf_fft.m`, `single_scan.m`, `scan_volume_frame.m`,
-`setup_scan_volume_frame.m`. Target file:
-`src/scanning/psf_fft.jl` and `src/scanning/scan.jl`. This is also
-the first place the deferred `genCorticalLightPath.m` orchestrator
-(Chunk-7 deferral) may finally be needed — see Chunk-7 notes.
+**Chunk 14 — Scanning II: noise model.** Port
+`PoissonGaussNoiseModel.m`, `applyNoiseModel.m`, `pixel_bleed.m`.
+Target file: `src/scanning/noise.jl`.
 
-Tests should cover: single-frame intensity at a known neuron location
-is positive and increases with `TPMParams.pavg`.
+Tests should cover: empirical mean / variance of noise output match
+analytic Poisson-Gauss predictions across a `μ` sweep.
 
 ## Watch out for
 
-- **`simulate_neural_volume` consumes RNG state deeply** — a single
-  end-to-end call is the closest thing this port has to a top-level
-  regression harness. Chunk 13's tests can call into it for setup.
-- **`NeuralVolume.gp_vals`** has heterogeneous shape: entries from
-  `set_cell_fluorescence` carry `(loc, val, is_soma)` while entries
-  appended by `generate_bg_dendrites` carry `(loc, val,
-  is_soma=BitVector(false…))`. The Vector type is `Vector{Any}` for
-  flexibility; tighten if Chunk 13 needs a uniform struct.
-- **`bg_proc` entries** are `(loc, val)` named tuples. Some bins may
-  be empty if `axon_params.N_proc > len(gp_bgvals)`. Defensive
-  iteration recommended.
-- **Vessel-mask shape**: `nv.neur_ves` is the *brain-only* slab
-  (`H, W, D`), and `nv.neur_ves_all` is the full slab including the
-  `vol_depth`-deep cortical-light-path above-volume region
-  (`H, W, D + vol_depth*vres`). Chunk 7's `collection_mask` and
-  Chunk-13's cortical-light-path will need `neur_ves_all`.
+- **`tpm_signal_scale` from Chunk 7** is used by `scan_volume_frame` to
+  rescale clean signal to physical photon counts. The noise chunk
+  consumes this output as `μ` (Poisson mean) and applies the
+  Poisson-Gauss model on top. Don't double-apply the TPM scale.
+- **`NoiseParams.sigscale`** (Chunk 1) is upstream's per-pixel offset
+  scaling computed from `tpm_signal_scale × spike_opts.dt × sfrac² /
+  (vol_sz_xy × vres²)`. The simulator updates `noise_params.sigscale`
+  inline; the Julia port should do the same.
+- **`pixel_bleed.m` (Gaussian-blur of adjacent pixels)** is small —
+  just a 2-D `Float32` convolution. Reuse Chunk 5's
+  `gaussian_psf` if a 2-D variant is needed.
 
 ## Working stance reminder
 
