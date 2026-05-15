@@ -3,8 +3,27 @@ uuid = "04116bad-86ec-414e-852a-2781886c9025"
 authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+ImageFiltering = "6a3955dd-da59-5b1f-98d4-e7296123deb5"
+OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+TiffImages = "731e570b-9d59-4bfa-96dc-6df516fadf69"
+
 [compat]
-julia = "1.10.10"
+AbstractFFTs = "1.5"
+Distributions = "0.25"
+FFTW = "1.7"
+Graphs = "1.9"
+ImageFiltering = "0.7"
+OffsetArrays = "1.14"
+StatsBase = "0.34"
+TiffImages = "0.10, 0.11"
+julia = "1.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
