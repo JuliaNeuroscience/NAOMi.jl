@@ -76,7 +76,10 @@ comps, baseim, ideal =
 ideal_traces, = times_from_profs(mov_clean, comps; lambda=0)
 
 # --- 6. Save outputs -----------------------------------------------------
-out_dir = get(ENV, "NAOMI_OUTPUT_DIR", mktempdir(; prefix="naomi_demo_"))
+# `cleanup=false` keeps the temp directory after the process exits — the
+# default would delete the movies we just wrote.
+out_dir = get(ENV, "NAOMI_OUTPUT_DIR",
+              mktempdir(; prefix="naomi_demo_", cleanup=false))
 isdir(out_dir) || mkpath(out_dir)
 write_tpm_movie(joinpath(out_dir, "movie.tif"), mov)
 write_tpm_movie(joinpath(out_dir, "movie_clean.tif"), mov_clean)

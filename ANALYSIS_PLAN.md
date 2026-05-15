@@ -894,6 +894,14 @@ target met). 20 portable I/O round-trip tests in `test/test_io.jl`.
   script's 30×30×20 µm volume; not caught by the Chunk-15 tests
   because their `H` never produced `mid_len == 1` under the test
   seeds.
+- **Demo-script output-directory fix (post-chunk).** The demo
+  initially created its output directory with `mktempdir(...)`,
+  whose default `cleanup=true` registers an `atexit` hook that
+  deletes the directory when the `julia` process exits — so the
+  TIFFs were written and then wiped, leaving the user nothing to
+  find. Fixed by passing `cleanup=false`. Not catchable by the
+  in-process unit suite (the `atexit` hook never fires within a
+  test run); it only manifests in a separate process.
 
 ### Chunk 18 — Documentation pass
 
