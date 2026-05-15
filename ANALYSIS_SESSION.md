@@ -7,79 +7,64 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 18 — Documentation pass.** Structural docs work — all 93
-exported symbols already had docstrings (verified zero gaps via
-`Base.Docs.doc`).
+**Chunk 19 — Deferred-work inventory.** Final chunk. The target
+repository `JuliaNeuroscience/NAOMi.jl` does not yet exist on GitHub, so
+GitHub issues could not be filed; instead the inventory was persisted as
+`DEFERRED_WORK.md` at the repo root, with each `###` entry written to
+drop straight into a GitHub issue body once the repo is published.
 
-- `docs/make.jl`: site restructured into Home, Getting started, and a
-  six-page API section; `checkdocs=:exports` added.
-- `docs/src/index.md`: overview, five-stage table, install
-  instructions, Song et al. 2021 citation with DOI.
-- `docs/src/getting-started.md` (new): end-to-end walkthrough mirroring
-  `examples/standard_pipeline.jl`.
-- `docs/src/{parameters,timetraces,optics,volume,scanning,io}.md` (new):
-  per-module API pages with explicit `@docs` blocks; every exported
-  symbol listed exactly once.
+`DEFERRED_WORK.md` covers ~30 items in four categories:
+- **A** — out-of-scope modules never ported (GUI, 16 variant scripts,
+  analysis/plotting, experimental utilities, MEX self-tests, LowRam).
+- **B** — optical paths not implemented (temporal focusing, vTwINS/
+  Bessel/cylindrical PSFs, cortical-light-path orchestrator,
+  spatially-varying Zernike).
+- **C** — 16 branch-level deferrals harvested from every chunk's
+  "Deviations from upstream" notes.
+- **D** — 5 algorithmic simplifications flagged for future fidelity
+  work.
 
-The local `docs/make.jl` build succeeds and Documenter's doctest stage
-runs clean. The existing `.github/workflows/CI.yml` already deploys
-docs — no CI changes needed.
+No code or tests in this chunk.
 
-## Key decisions made
+## Project status: ALL CHUNKS COMPLETE
 
-- **`checkdocs=:exports`.** Two internal helpers (`dilate2d_disk!`,
-  `paint_ball3d!`) have docstrings but are not exported; Documenter
-  1.x's default `:all` flagged them. `:exports` scopes the manual-
-  inclusion check to the public API.
-- **Explicit `@docs` blocks** (not `@autodocs`) so API pages control
-  grouping and ordering.
-- **Getting-started uses plain code blocks**, not `@example`, to keep
-  the doc build fast (the real pipeline takes ~21 s).
+Chunks 0–19 are all `complete`. The Julia port of NAOMi-Sim's core
+five-stage pipeline (TimeTraces, Optics, Volume, Scanning, I/O) is done.
+
+- Test suite: 671/671 pass on Julia 1.10 LTS.
+- Docs: `julia --project=docs docs/make.jl` builds cleanly; doctests
+  pass.
+- End-to-end: `julia --project examples/standard_pipeline.jl` runs the
+  full volume → PSF → activity → scan → ideal-components → TIFF pipeline
+  on a 30×30×20 µm volume in ~21 s.
 
 ## State of the codebase
 
-- Files created or modified:
-  - `docs/make.jl` — restructured page tree + `checkdocs=:exports`.
-  - `docs/src/index.md` — rewritten (overview + citation).
-  - `docs/src/getting-started.md` — new.
-  - `docs/src/parameters.md`, `timetraces.md`, `optics.md`,
-    `volume.md`, `scanning.md`, `io.md` — new API pages.
-  - `ANALYSIS_PLAN.md` — chunk-status table + chunk-18 notes + ledger.
+- Files created or modified this chunk:
+  - `DEFERRED_WORK.md` — new (the inventory).
+  - `ANALYSIS_PLAN.md` — chunk-19 marked complete + notes + ledger;
+    all 20 chunks now `complete`.
 - Package loads cleanly: yes.
-- Test suite passes: yes — 671/671 on Julia 1.10 LTS (unchanged from
-  Chunk 17; this chunk touched only `docs/`).
-- Docs build: `julia --project=docs docs/make.jl` succeeds locally,
-  doctests pass.
+- Test suite passes: yes — 671/671 on Julia 1.10 LTS (unchanged; this
+  chunk touched no `src/` or `test/` files).
 
-## Next chunk
+## Suggested follow-up work
 
-**Chunk 19 — Deferred-work inventory.** File GitHub issues for
-everything out-of-scope: GUI, all variant scripts, low-RAM volume
-variant, analysis-and-plotting helpers, experimental utilities, MEX
-self-tests, plus the port-specific deferrals accumulated in chunk
-notes. Each issue should reference the upstream `.m` files and the
-algorithmic role.
+The porting plan is finished. Natural next steps, none of them part of
+the plan:
 
-## Watch out for
-
-- **Chunk 19 produces GitHub issues, not code.** Check whether the
-  repo has a GitHub remote and `gh` is authenticated before assuming
-  issues can be filed; if not, the deliverable may need to be a
-  `DEFERRED_WORK.md` inventory document instead. Confirm the intended
-  output form.
-- **The deferral list is already substantial** — scattered through
-  every chunk's "Deviations from upstream" section in
-  `ANALYSIS_PLAN.md` (e.g. temporal-focusing scattering, cortical-
-  light-path orchestrator, `scan_ideal`/`single_scan_stack`,
-  `make_avi`, `tifinitialize`/`tifappend` streaming, L1-penalised
-  `times_from_profs`, polyphase resampling). Harvest these alongside
-  the "Out of scope" section at the bottom of the plan.
+1. **Publish the repository** to `JuliaNeuroscience/NAOMi.jl`, then file
+   the `DEFERRED_WORK.md` entries as GitHub issues.
+2. **Run the package-freshening skills** (`/freshen-package` or the
+   individual `freshen-*` skills) — Aqua, ExplicitImports, struct
+   mutability, coverage, gitignore — to bring the package up to
+   release-quality polish.
+3. **Cross-version check**: the suite is verified on Julia 1.10 LTS;
+   a couple of stochastic tests are known to draw differently on 1.12
+   (see the plan's Working-knowledge notes). Consider widening seeds
+   or marking those tests version-tolerant before tagging a release.
 
 ## Working stance reminder
 
-`ANALYSIS_PLAN.md` "Working stance" authorises autonomous chunk
-progression with auto-commits.
-
-## Suggested next workflow
-
-`/clear` and re-run `/new-analysis-implement`.
+`ANALYSIS_PLAN.md` "Working stance" authorised autonomous chunk
+progression with auto-commits throughout.

@@ -27,7 +27,7 @@ session.
 |    16 | Ideal components + ground truth             | complete    |
 |    17 | I/O + reference demo script                 | complete    |
 |    18 | Documentation pass                          | complete    |
-|    19 | Deferred-work inventory                     | pending     |
+|    19 | Deferred-work inventory                     | complete    |
 
 ## Working stance
 
@@ -942,6 +942,25 @@ low-RAM volume variant, analysis-and-plotting helpers, experimental/
 utilities, MEX self-tests. Each issue references the upstream `.m` files
 and the algorithmic role.
 
+**Notes**: The target repository `JuliaNeuroscience/NAOMi.jl` does not
+yet exist on GitHub (`gh repo view` → "Could not resolve to a
+Repository"), so GitHub issues cannot be filed. Per the Working stance
+("make the reasonable call and continue"), the inventory was instead
+persisted as `DEFERRED_WORK.md` at the repo root. Each `###` entry is
+written to drop straight into a GitHub issue body once the repo is
+published.
+
+`DEFERRED_WORK.md` organises ~30 deferred items into four categories:
+(A) out-of-scope modules never ported — GUI, 16 variant scripts,
+analysis/plotting, experimental utilities, MEX self-tests, LowRam
+variant; (B) optical paths not yet implemented — temporal focusing,
+vTwINS/Bessel/cylindrical PSFs, the cortical-light-path orchestrator,
+spatially-varying Zernike; (C) 16 branch-level deferrals harvested from
+every chunk's "Deviations from upstream" notes; (D) 5 algorithmic
+simplifications flagged for future fidelity work. Each entry cites the
+upstream `.m`/`.cpp` files, the algorithmic role, why it was deferred,
+and what a port would need. No code or tests in this chunk.
+
 ## Verification (end-to-end)
 
 Per chunk: `Pkg.test()` from the package's environment must pass. Use the
@@ -1140,4 +1159,5 @@ statistics.
 - 2026-05-15 CHUNK-016 (ideal components + NNLS time-trace extraction) → next: CHUNK-017
 - 2026-05-15 CHUNK-017 (TIFF I/O + reference demo script) → next: CHUNK-018
 - 2026-05-15 CHUNK-018 (Documenter site + getting-started page) → next: CHUNK-019
+- 2026-05-15 CHUNK-019 (deferred-work inventory → DEFERRED_WORK.md) → all chunks complete
 
