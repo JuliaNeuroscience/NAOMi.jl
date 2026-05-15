@@ -13,7 +13,7 @@ session.
 |     2 | TimeTraces I — spike generation             | complete    |
 |     3 | TimeTraces II — calcium dynamics            | complete    |
 |     4 | TimeTraces III — top-level + correlation    | complete    |
-|     5 | Optics I — PSF kernels                      | pending     |
+|     5 | Optics I — PSF kernels                      | complete    |
 |     6 | Optics II — Zernike + back-aperture         | pending     |
 |     7 | Optics III — Fresnel propagation            | pending     |
 |     8 | Volume I — vasculature                      | pending     |
@@ -301,10 +301,35 @@ ported — the standard pipeline always uses the discrete approximation.
 ### Chunk 5 — Optics I: PSF kernels
 
 Port `gaussian_psf.m`, `gaussian_psf_na.m`, `gaussianBeamSize.m`,
-`generateGaussianProfile.m`. Use `FFTW.jl` plans cached on a `PSFContext`
-struct.
+`generateGaussianProfile.m`.
 
-**Tests**: PSF integrates to 1; FWHM follows analytic NA prediction.
+**Tests**: shape and centring of returned arrays; PSF max at origin
+equals 1 (peak normalisation, *not* integral); for the NA variant, the
+axial half-intensity plane sits at `z = ±psflen/2`
+(where `psflen = 0.626·λ/(n − √(n² − NA²))`); `gaussian_beam_size`
+returns a 2-D-only triple, monotone in `dist`; `generate_gaussian_profile`
+zeroes the field outside the hard aperture.
+
+**Notes**: All four ports live in `src/optics/psf.jl`. Public exports:
+`gaussian_psf`, `gaussian_psf_na`, `gaussian_beam_size`,
+`generate_gaussian_profile`. These functions are pure analytic
+evaluations — no FFTs (those land in Chunk 13). A `PSFContext` struct
+was suggested in the original plan; it isn't actually needed yet
+(there's nothing to cache without FFT plans).
+
+**Deviations from the original plan**:
+
+- **PSFs are peak-normalised, not unit-integral**. Upstream
+  `gaussian_psf*` returns a kernel with peak value 1.0; integration
+  over the support is not unity (and is grid-dependent). Tests check
+  peak normalisation instead.
+- **Coordinate-axis quirk preserved verbatim**: `gaussian_psf` uses
+  `(1:N) − round(N/2)` indexing (origin at `round(N/2)`) while
+  `gaussian_psf_na` uses `(0:N−1) − round(N/2)` (origin at
+  `round(N/2) + 1`). The two functions disagree on which sample is "zero"
+  by one. Downstream code that pulls a center index must compute it
+  per-function.
+- **`PSFContext` deferred** until Chunk 13 wants FFT plans.
 
 ### Chunk 6 — Optics II: Zernike + back-aperture
 
@@ -512,6 +537,15 @@ statistics.
   100 Hz; the user-facing `spike_opts.dt` triggers a linear-interp
   resample. Polyphase / anti-aliasing is deferred; if Chunk 13+ shows
   spectral artefacts at slow `dt`, revisit.
+- **2026-05-15 (CHUNK-005)**: Upstream's "axial FWHM" in
+  `gaussian_psf*` is *not* the conventional Gaussian FWHM — it is the
+  plane where intensity (the un-squared field amplitude) drops to ½ of
+  the on-axis peak. With `psf = intensity^2`, the squared PSF at that
+  plane is ¼ of its peak. `psflen` is twice this half-width.
+- **2026-05-15 (CHUNK-005)**: `gaussian_psf` and `gaussian_psf_na`
+  use different coordinate indexing — the former centers the origin
+  on index `round(N/2)`, the latter on `round(N/2) + 1`. Downstream
+  code consuming PSF arrays must derive the center per-function.
 
 ## Session ledger
 
@@ -520,4 +554,5 @@ statistics.
 - 2026-05-15 CHUNK-002 (spike generation) → next: CHUNK-003
 - 2026-05-15 CHUNK-003 (calcium dynamics) → next: CHUNK-004
 - 2026-05-15 CHUNK-004 (top-level traces + Hawkes) → next: CHUNK-005
+- 2026-05-15 CHUNK-005 (Gaussian PSF kernels)     → next: CHUNK-006
 
