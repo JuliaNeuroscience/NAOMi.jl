@@ -11,7 +11,7 @@ session.
 |     0 | Bootstrap                                   | complete    |
 |     1 | Parameter types                             | complete    |
 |     2 | TimeTraces I — spike generation             | complete    |
-|     3 | TimeTraces II — calcium dynamics            | pending     |
+|     3 | TimeTraces II — calcium dynamics            | complete    |
 |     4 | TimeTraces III — top-level + correlation    | pending     |
 |     5 | Optics I — PSF kernels                      | pending     |
 |     6 | Optics II — Zernike + back-aperture         | pending     |
@@ -28,6 +28,33 @@ session.
 |    17 | I/O + reference demo script                 | pending     |
 |    18 | Documentation pass                          | pending     |
 |    19 | Deferred-work inventory                     | pending     |
+
+## Working stance
+
+This is a port of someone else's code (the upstream MATLAB NAOMi-Sim);
+the user is not in a position to easily weigh in on design decisions
+mid-chunk. Default to autonomous progress:
+
+- **Make the reasonable call and continue.** When upstream has an
+  ambiguity (multiple plausible Julia idioms, an upstream bug, a name
+  collision), pick the option that follows existing conventions in this
+  port (preserved upstream field names, snake_case function names,
+  no new dependencies unless clearly justified) and record the choice
+  in the chunk's `Notes`. Don't pause to ask.
+- **Auto-commit after every green chunk.** Stage chunk-relevant files
+  and commit with the standard message format
+  (`Chunk N: <short title>` + `Co-Authored-By: Claude Opus 4.7`).
+  Never push. Never `--no-verify`.
+- **Continue to the next chunk if context allows.** After committing,
+  check `/context`. If free space is **> 50 %** and the just-completed
+  chunk had no `blocked` issues, start the next chunk in the same
+  session. Otherwise stop and let the user `/clear`.
+- **Stop early on any of:** a chunk marked `blocked`; a test failure
+  that isn't an obvious tolerance issue; a missing upstream file that
+  needs the user to clarify scope; or context dropping below 50 % free.
+- **Bias toward smaller, more frequent commits** over one big commit
+  spanning multiple chunks — easier for the user to review after the
+  fact.
 
 ## Context
 
@@ -181,14 +208,46 @@ Test deps `Random` and `Statistics` added to `[extras]` /
 
 ### Chunk 3 — TimeTraces II: calcium dynamics
 
-Port `make_calcium_impulse.m`, `calcium_dynamics.m` with all four `dyn_type`
-branches (`:AR1`, `:AR2`, `:single`, `:Ca_DE`), `genNextCalciumDynamics.m`,
-`genNextSpikeTimepoint.m`, `generateNextTimePoint.m`. Hand-code GCaMP3 /
-GCaMP6 ODE coefficients from the upstream constants rather than importing
-`sbmvivo`.
+Port `make_calcium_impulse.m`, `calcium_dynamics.m`,
+`mk_doub_exp_ker.m` (default branch). Hand-code GCaMP3 / GCaMP6 ODE
+coefficients from the upstream constants rather than importing `sbmvivo`.
 
-**Tests**: impulse-response decay time matches expected τ; ODE steady state
-correct.
+**Tests**: impulse-response decay matches expected AR poles; ODE steady
+state ≈ `ca_rest` for quiet rows; impulse drives `C` above rest in every
+branch; `ca_sat < 1` caps `C`; Hill curve finite/positive/monotone across
+all ten supported indicator-protein symbols; unknown protein warns and
+falls back to GCaMP6f.
+
+**Notes**: All four functions ported into `src/timetraces/calcium.jl`.
+Public exports: `make_doub_exp_kernel`, `make_calcium_impulse`,
+`calcium_dynamics`, `fluorescence`.
+
+**Deviations from the plan as originally drafted**:
+
+- **`dyn_type` branches `:AR1` / `:AR2` removed from scope** — they appear
+  only in the upstream *docstrings* of `generateNextTimePoint.m` and
+  `generateTimeTraces.m`, never in the dispatch logic of
+  `calcium_dynamics.m`. The actual `sat_type` set is
+  `(:single, :Ca_DE, :double)`, all three of which are ported.
+- **`genNextCalciumDynamics.m`, `genNextSpikeTimepoint.m`,
+  `generateNextTimePoint.m` deferred to issue tracker (Chunk 19)** —
+  `grep` confirms these are referenced *only* by
+  `TPM_Simulation_Script_LowRam.m`, which is explicitly out of scope.
+  Re-introducing them belongs with the rest of the LowRAM port if/when
+  that ever happens.
+- **`mk_doub_exp_ker.m`'s `'plus'` and `'min'` branches deferred** — the
+  standard pipeline only exercises the default `'mult'` form.
+- **AR-style impulse response is implemented as a hand-rolled
+  difference-equation evaluator** (`_poly_from_roots` + recursion) to
+  avoid a `ControlSystems.jl` dependency. Result is bit-exact against
+  the analytic two-pole closed form.
+- **`Ca_DE` convolution is hand-rolled** (`_conv_full_decimate`) — keeps
+  `DSP.jl` off the dependency list while supporting the upstream
+  `over_samp` decimation in one step.
+- **`fluorescence` (upstream private `sat_nonlin`) supports all ten
+  indicator-protein symbols** from `calcium_dynamics.m`. Aliases mirror
+  upstream's `case {'gcamp6','gcamp6f'}`-style multi-match (e.g.
+  `:OGB1`/`:OGB_1`, `:GCaMP6_RS06`/`:GCaMP6rs06`).
 
 ### Chunk 4 — TimeTraces III: top-level + correlation
 
@@ -387,10 +446,23 @@ statistics.
   single bin do not accumulate. The Julia port mirrors this. If
   downstream code wants count semantics (e.g. for binning a Hawkes
   process), use `bin_spike_trains`, which *does* accumulate.
+- **2026-05-15 (CHUNK-003)**: `CalciumParams.t_on` / `t_off` are
+  *rates* (1/s), not time constants, despite the misleading names.
+  This matches upstream `mk_doub_exp_ker.m`, where the kernel is
+  `A·(1 − exp(−t_on·t))·exp(−t_off·t)`. With the GCaMP6f defaults
+  (`t_on = 0.8535`, `t_off = 98.6173`) the kernel peaks near 50 ms and
+  decays over ~150 ms. Future chunks must not "fix" this by inverting.
+- **2026-05-15 (CHUNK-003)**: Quiet (`S = 0`) steady state of the
+  `:single` and `:double` ODE branches is *not exactly* `ca_rest` —
+  there is a small slow drift (~1 % of `ca_rest` over hundreds of
+  samples) because `CB_i(0) = 0` is not the equilibrium of the binding
+  ODE. This is upstream behaviour, mirrored here. Tests bound the
+  drift to <1 % rather than asserting equality.
 
 ## Session ledger
 
 - 2026-05-15 CHUNK-000 (bootstrap) → next: CHUNK-001
 - 2026-05-15 CHUNK-001 (parameter types) → next: CHUNK-002
 - 2026-05-15 CHUNK-002 (spike generation) → next: CHUNK-003
+- 2026-05-15 CHUNK-003 (calcium dynamics) → next: CHUNK-004
 
