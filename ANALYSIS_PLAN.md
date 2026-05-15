@@ -8,8 +8,8 @@ session.
 
 | Chunk | Title                                       | Status      |
 |------:|---------------------------------------------|-------------|
-|     0 | Bootstrap                                   | in progress |
-|     1 | Parameter types                             | pending     |
+|     0 | Bootstrap                                   | complete    |
+|     1 | Parameter types                             | complete    |
 |     2 | TimeTraces I — spike generation             | pending     |
 |     3 | TimeTraces II — calcium dynamics            | pending     |
 |     4 | TimeTraces III — top-level + correlation    | pending     |
@@ -123,6 +123,35 @@ Defaults verbatim from upstream.
 
 **Tests**: defaults match; derived fields (e.g. `N_neur` from density)
 compute correctly; parameter overriding works.
+
+**Notes**: Implemented as `Base.@kwdef mutable struct`s so derived fields
+can be filled in place via `finalize!`. Two additional sub-structs created:
+`VasculatureNodeParams` (the upstream `vasc_params.node_params` sub-struct)
+and `PSFFastMask` (the upstream `psf_params.FM` sub-struct).
+`CalciumParams(prot::Symbol; kwargs...)` constructor selects per-protein
+defaults (GCaMP6/6f/6s/3/7) at construction time and lets user kwargs
+override them.
+
+**Design choices for downstream chunks**:
+- **Field names preserved verbatim from upstream MATLAB** (e.g. `vesSize`,
+  `dtParams`, `randWeightScale`, `objNA`, `zernikeWt`). The mixed
+  camelCase/snake_case is non-idiomatic Julia, but it makes upstream
+  documentation, example scripts, and Bitbucket issues map 1:1 to Julia
+  code. Future ports of `simulate_*` functions can read field names
+  directly from upstream `.m` source.
+- **Enum-like strings → `Symbol`** (`:Ca_DE`, `:GCaMP6`, `:gaussian`,
+  `:two_photon`). All `===` comparisons in downstream code should use
+  Symbols, not Strings.
+- **Sentinel-based derived fields**: `VolumeParams.N_neur == 0` and
+  `TPMParams.phi == NaN` mean "derive me on `finalize!`". Downstream code
+  that consumes these structs should call `finalize!` before reading
+  derived fields; tests confirm idempotence.
+- **Upstream bug noted**: `check_noise_params.m` has duplicate `bleedp` /
+  `bleedw` blocks; the second is dead code. Effective upstream defaults
+  (0.3, 0.4) are encoded; this is asserted in the test suite.
+- **Out of scope here**: input validation beyond what upstream `check_*`
+  did (e.g. range checks, symbol membership). Future chunks may add
+  validation as the consuming code surfaces requirements.
 
 ### Chunk 2 — TimeTraces I: spike generation
 
@@ -314,3 +343,26 @@ statistics.
   carries `:gaussian | :vtwins | :bessel`; we implement only `:gaussian`
   initially and dispatch on the symbol so adding the others later is
   additive).
+
+## Working knowledge
+
+- **2026-05-15 (CHUNK-001)**: Parameter-struct field names are preserved
+  verbatim from upstream MATLAB (mixed camelCase/snake_case) for
+  traceability. Downstream chunks must not rename them in passing.
+- **2026-05-15 (CHUNK-001)**: Enum-like fields are stored as `Symbol`.
+  Downstream `===` dispatch should use Symbols (`:Ca_DE`, `:GCaMP6`,
+  `:gaussian`, …), never Strings.
+- **2026-05-15 (CHUNK-001)**: Derived fields use sentinels (`N_neur == 0`,
+  `phi == NaN`) resolved by `finalize!`. Downstream consumers must call
+  `finalize!` (or check for the sentinel) before reading.
+- **2026-05-15 (CHUNK-001)**: Upstream `check_noise_params.m` has dead
+  duplicate-block code for `bleedp` / `bleedw`; the *effective* upstream
+  defaults are `0.3` / `0.4`, encoded here. If downstream tests ever
+  cross-check against upstream MATLAB output, this is the value that
+  matches what upstream actually applied.
+
+## Session ledger
+
+- 2026-05-15 CHUNK-000 (bootstrap) → next: CHUNK-001
+- 2026-05-15 CHUNK-001 (parameter types) → next: CHUNK-002
+

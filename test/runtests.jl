@@ -2,5 +2,5 @@ using NAOMi
 using Test
 
 @testset "NAOMi.jl" begin
-    # Write your tests here.
+    include("test_params.jl")
 end
