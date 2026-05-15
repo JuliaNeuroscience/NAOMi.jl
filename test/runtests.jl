@@ -9,4 +9,5 @@ using Test
     include("optics/test_psf.jl")
     include("optics/test_zernike.jl")
     include("optics/test_propagation.jl")
+    include("volume/test_vasculature.jl")
 end

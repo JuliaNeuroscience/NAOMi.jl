@@ -16,7 +16,7 @@ session.
 |     5 | Optics I — PSF kernels                      | complete    |
 |     6 | Optics II — Zernike + back-aperture         | complete    |
 |     7 | Optics III — Fresnel propagation            | complete    |
-|     8 | Volume I — vasculature                      | pending     |
+|     8 | Volume I — vasculature                      | complete    |
 |     9 | Volume II — soma generation                 | pending     |
 |    10 | Volume III — dendrites                      | pending     |
 |    11 | Volume IV — axons + neuropil background     | pending     |
@@ -437,6 +437,57 @@ Port `growMajorVessels.m`, `growCapillaries.m`, `simulatebloodvessels.m`,
 **Tests**: vessel mask coverage within plausible range (volume fraction
 ~2–5%); no orphan capillaries; surface vasculature density matches `vesFreq`.
 
+**Notes**: All ported into `src/volume/vasculature.jl`. Public exports:
+`VesselNode`, `VesselEdge`, `gen_node`, `gen_conn`, `del_node!`,
+`nodes_to_conn`, `pseudo_rand_sample_2d`, `pseudo_rand_sample_3d`,
+`vessel_dijkstra`, `branch_grow_nodes!`, `grow_major_vessels!`,
+`grow_capillaries!`, `conn_to_vol!`, `simulate_blood_vessels`. To keep
+the Chunk 12 orchestrator thin (per session handoff), the small
+upstream helpers `gennode.m`, `delnode.m`, `genconn.m`, `nodesToConn.m`,
+`branchGrowNodes.m`, `connToVol.m`, `pseudoRandSample2D.m`, and
+`pseudoRandSample3D.m` were ported in this chunk too (they're either
+trivial or tightly coupled to vessel growth). Chunk 12 will only need
+to add the *non-vasculature* orchestrators.
+
+**Deviations from upstream**:
+
+- **`Graphs.jl` was not used.** Hand-rolled `vessel_dijkstra` (~25 LOC)
+  matches upstream exactly and handles the dense `Inf`-as-forbidden
+  matrix that upstream depends on. Building a complete `SimpleGraph` +
+  `dijkstra_shortest_paths` would be a worse fit (and would still need
+  a wrapper to deal with the structural `Inf` blocks). `SimpleWeightedGraphs`
+  not added.
+- **`cscvn` (MATLAB's cubic-spline-curve fitting) replaced by linear
+  interpolation in `conn_to_vol!`.** Spline aesthetics are immaterial
+  for a binary vessel mask once the per-edge ball dilation by
+  `conn.weight` dominates. Recorded in the function docstring.
+- **`imdilate` replaced by hand-rolled binary 2-D disk dilation and
+  per-point 3-D ball painting** (`dilate2d_disk!`, `paint_ball3d!`).
+  Avoids pulling in `ImageMorphology`. If profiling shows it's a hot
+  path, swap in `ImageMorphology.dilate`.
+- **Empty/orphan distinction.** Upstream uses MATLAB's `[]` empty
+  vs. `0` integer to distinguish "deleted/orphan" from "source/no
+  parent". The Julia port encodes this with `root == -1` (orphan/empty)
+  vs. `root == 0` (source) vs. `root > 0` (parent index). Tests in
+  `grow_capillaries!` that mirrored upstream's
+  `~cellfun(@isempty, {nodes.root})` map to `nodes[i].root >= 0`.
+- **Counts depend strongly on volume size.** At default
+  `vasc_params.sourceFreq = 1000 µm/node` and
+  `vesFreq = [125 200 50]`, the expected number of source/diving
+  vessels is `O(L/1000)`/`O(L²/40 000)` — small test volumes round
+  these to 0. The test suite uses scaled-down `sourceFreq = 400`,
+  `vesFreq = [80, 100, 30]` to obtain a non-trivial vasculature at
+  ~150 µm side length. The 2–5 % upstream coverage target is *not*
+  asserted on those small volumes (would require a 500 µm side); the
+  test bracket is a generous `0.1 % < frac < 50 %`.
+- **`grow_capillaries!` capillary-to-capillary "nearest neighbour"
+  bootstrap simplified.** Upstream's MATLAB uses
+  `[~,mincapp] = min(cappmat)` (per-column min) and seeds connections
+  via the `mincapp` permutation. The Julia port iterates row-by-row
+  with the same `connect-then-Inf-out` semantics; results are
+  topologically equivalent but capp pairs may be visited in a
+  different order under the same RNG draw.
+
 ### Chunk 9 — Volume II: soma generation
 
 Port `generateNeuralBody.m`, `smoothCellBody.m`, `setCellFluoresence.m`,
@@ -645,6 +696,20 @@ statistics.
   `gaussian_beam_size(psf, vol_depth + vol_sz[3]/2) +
   [vol_sz[1], vol_sz[2], vol_depth]` (i.e. the size 3 axis adds
   `vol_depth` only, not `vol_depth/2`).
+- **2026-05-15 (CHUNK-008)**: Upstream's vasculature node counts scale
+  as `nsource ∝ L/sourceFreq` and `nvert ∝ L²/vesFreq[2]²`. At the
+  default `sourceFreq = 1000 µm/node` and `vesFreq[2] = 200 µm`, a
+  100×100 µm patch rounds *both* to 0 with high probability — the
+  vasculature simulation is calibrated for upstream's standard
+  500×500 µm `vol_sz`. Downstream chunks doing scale-tests must
+  either use ≥150 µm side length plus reduced `sourceFreq`/`vesFreq`,
+  or accept that small volumes produce capillary-only vasculature.
+- **2026-05-15 (CHUNK-008)**: Vessel `nodes[i].root` uses three reserved
+  values: `> 0` = parent index, `0` = source/no parent, `-1` =
+  deleted-or-orphan (faithful encoding of upstream's `[]` vs. `0`
+  distinction). Downstream consumers iterating over connected
+  vasculature should filter by `root >= 0`; filtering by `root > 0`
+  excludes valid source nodes.
 - **2026-05-15 (CHUNK-007)**: `Pkg.test()` re-resolves dependencies
   and may pick up newer versions; some stochastic tests
   (Chunk 4 `gen_correlated_spike_trains — spatial correlation`)
@@ -666,4 +731,5 @@ statistics.
 - 2026-05-15 CHUNK-005 (Gaussian PSF kernels)     → next: CHUNK-006
 - 2026-05-15 CHUNK-006 (Zernike + back-aperture)  → next: CHUNK-007
 - 2026-05-15 CHUNK-007 (Fresnel propagation kernel + collection mask) → next: CHUNK-008
+- 2026-05-15 CHUNK-008 (vasculature) → next: CHUNK-009
 

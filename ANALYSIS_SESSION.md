@@ -7,121 +7,120 @@ targeted for the JuliaNeuroscience GitHub org.
 
 ## What was just completed
 
-**Chunk 7 — Optics III: Fresnel propagation + cortical mask.** Ported
-six standalone functions into `src/optics/propagation.jl`:
+**Chunk 8 — Volume I: vasculature.** Ported the entire upstream
+vasculature pipeline into `src/volume/vasculature.jl`:
 
-- `fresnel_propagation_multi` — Schmidt (2010) two-step angular-spectrum
-  propagator with optional per-plane stack output and cached FFT plans.
-- `group_z_project` — block-wise reduction along axis 3 with
-  `:sum, :prod, :mean, :max, :min` (median/mode upstream branches
-  not exercised; deferred).
-- `width_estimate` / `width_estimate_3d` — linear-interpolation
-  FWHM (and arbitrary-fraction width). **Upstream one-sample bug
-  fixed.**
-- `tpm_signal_scale` — Xu–Webb two-photon photon-flux formula.
-- `collection_mask` — collection-side hemoglobin absorption through
-  the vasculature using a depth-dependent cone-of-collection
-  convolution (`10^(-density · hemoabs / vres)`).
+- `simulate_blood_vessels` — top-level orchestrator (was upstream's
+  `simulatebloodvessels.m`).
+- `grow_major_vessels!` — source / edge / surface / sfvt / diving
+  vessel placement (was `growMajorVessels.m`).
+- `grow_capillaries!` — capillary placement and capp-to-capp /
+  capp-to-vert connectivity (was `growCapillaries.m`).
+- `branch_grow_nodes!` — recursive surface-branch growth
+  (was `branchGrowNodes.m`).
+- `vessel_dijkstra` — direct port of the dense-matrix Dijkstra used
+  for surface-vessel routing; handles `Inf` as "forbidden edge".
+- Supporting helpers: `VesselNode`, `VesselEdge`, `gen_node`,
+  `gen_conn`, `del_node!`, `nodes_to_conn`, `conn_to_vol!`,
+  `pseudo_rand_sample_2d`, `pseudo_rand_sample_3d`.
 
-The two top-level orchestrators (`genCorticalLightPath`/`Lite` and
-`simulate_optical_propagation`) are **deferred to Chunk 13** (scanning
-— first consumer that actually needs spatially-varying excitation
-masks). See `ANALYSIS_PLAN.md` Chunk-7 Notes for full deviation list.
+The handoff note from Chunk 7 flagged the upstream `gennode` / `delnode`
+/ `branchGrowNodes` / `connToVol` helpers (formally listed in Chunk 12) as
+overlapping with vessel growth — those were ported here so the Chunk 12
+orchestrator stays thin.
 
-361 tests pass on Julia 1.10 LTS (the standard verification target).
-Started at 325; +36 over this chunk.
+413 tests pass on Julia 1.10 LTS; +52 new this chunk.
 
 ## Key decisions made
 
-- **Scope split: core kernels in, orchestrators deferred.** The full
-  per-tile cortical-light-path code is several hundred lines of
-  upstream MATLAB with branches we don't yet exercise (vtwins,
-  bessel, temporal-focusing, fastmask, fineSamp, struct-Uin). Porting
-  the standalone kernels lets Chunk 8–12 (volume generation) proceed
-  without blocking on the orchestrator.
-- **Fixed the upstream `widthestimate.m` one-sample bug.** The
-  expression `s1 + s2 + sum(greater)` is one sample-spacing too wide
-  vs. the correct `s1 + s2 + (sum(greater) − 1)`. Verified against
-  the analytic FWHM of a sampled Gaussian.
-- **Hand-rolled disk-kernel correlation for `collection_mask`** rather
-  than calling `ImageFiltering.imfilter`. Kernel sums to unity, zero
-  padding outside the array — matches MATLAB `conv2(...,'same')`
-  semantics. Easy to swap if profiling shows it's a hot path.
-- **No `Statistics` dependency added** — `group_z_project(:mean)`
-  computes `sum(view)/length(view)` inline. (`mean` is stdlib but
-  not in `[deps]`.)
+- **Did not pull in `Graphs.jl`/`SimpleWeightedGraphs`.** Hand-rolled
+  `vessel_dijkstra` (~25 lines) matches upstream exactly and naturally
+  handles the dense `Inf`-as-forbidden structure that upstream
+  depends on. Building a `complete_graph` + `dijkstra_shortest_paths`
+  is a worse fit.
+- **Replaced `cscvn` (MATLAB cubic-spline curve) with linear
+  interpolation between endpoints in `conn_to_vol!`.** Spline
+  aesthetics are immaterial once each edge is dilated to a tube of
+  radius `conn.weight`. Noted in the function docstring.
+- **Hand-rolled `dilate2d_disk!` / `paint_ball3d!`** in lieu of
+  `ImageMorphology.dilate`. The vasculature mask is small enough that
+  per-point ball painting is plenty fast (sub-second for the test
+  volumes). If profiling later identifies it as a hot path, the swap
+  is local.
+- **`root` field of `VesselNode` uses three reserved values** to
+  faithfully encode upstream's `[]` vs. `0` distinction: `> 0` =
+  parent, `0` = source/no parent, `-1` = deleted-or-orphan capp.
+- **Tests use scaled-down `sourceFreq = 400`, `vesFreq = [80, 100, 30]`**
+  on a ~150 µm side volume. At upstream defaults
+  (`sourceFreq = 1000`, `vesFreq = [125, 200, 50]`) small test volumes
+  round all node counts to 0. Recorded as working knowledge.
 
 ## State of the codebase
 
 - Files created or modified:
-  - `src/optics/propagation.jl` — populated (was placeholder).
-  - `src/NAOMi.jl` — added `using FFTW`.
-  - `test/optics/test_propagation.jl` — new (36 tests).
+  - `src/volume/vasculature.jl` — populated (was placeholder; +1130 LOC).
+  - `test/volume/test_vasculature.jl` — new (+52 tests).
   - `test/runtests.jl` — includes the new test file.
   - `ANALYSIS_PLAN.md` — chunk-status table updated, deviations and
     working-knowledge entries added.
 - Package loads cleanly: yes.
 - Test suite passes: yes — `Pkg.test()` on Julia 1.10 LTS shows
-  361/361 passing.
-- Test suite on Julia 1.12: 360/361. The one failure is the
-  pre-existing `gen_correlated_spike_trains — spatial correlation`
-  test from Chunk 4 (verified failing on baseline `5b67474` too),
-  caused by RNG-sensitivity in newer Distributions on 1.12.
-  *Not* introduced by Chunk 7. Recorded in plan working knowledge.
-- Entry point(s): none yet; Chunks 8–17 build up the simulation
+  413/413 passing (was 361 before this chunk).
+- Entry point(s): none yet; Chunks 9–17 build up the rest of the
   pipeline.
-- Known issues: none for Chunk 7.
+- Known issues: none introduced this chunk. The pre-existing
+  `gen_correlated_spike_trains — spatial correlation` test from
+  Chunk 4 still fails on Julia 1.12 (RNG-sensitivity in newer
+  Distributions); not touched here.
 
 ## Next chunk
 
-**Chunk 8 — Volume I: vasculature.** Port `growMajorVessels.m`,
-`growCapillaries.m`, `simulatebloodvessels.m`, `vessel_dijkstra.m`.
-Use `Graphs.jl` (+ `SimpleWeightedGraphs` if needed) for routing.
-Target file: `src/volume/vasculature.jl`.
+**Chunk 9 — Volume II: soma generation.** Port `generateNeuralBody.m`,
+`smoothCellBody.m`, `setCellFluoresence.m`, `pseudoRandSample2D.m` (already
+ported in Chunk 8 — reuse), `pseudoRandSample3D.m` (likewise),
+`sampleDenseNeurons.m`, `isolateVisibleSomas.m`, `teardrop_poj.m`. Replace
+`S2_Sampling_Suite` with sphere-surface sampling via uniform random
+rotations (Marsaglia / `randn`). Implement GP soma roughness directly
+with Karhunen–Loève / Cholesky factorisation. Target file:
+`src/volume/somata.jl`.
 
 Tests should cover:
 
-- Vessel mask coverage within plausible range (~2–5% volume fraction).
-- No orphan capillaries (all connected to the major-vessel graph).
-- Surface vasculature density matches `VasculatureParams.vesFreq`.
-
-This is the first **Volume** chunk and the upstream code is dense
-graph-routing. The vessel mask from this chunk eventually feeds
-`collection_mask` (this chunk) and the deferred light-path
-orchestrators (Chunk 13).
+- Neuron count matches `N_neur` from `VolumeParams.finalize!`.
+- Minimum pairwise distance respected (`vol_params.min_dist`).
+- Eccentricity bounded by `eccen`.
+- Nucleus fluorescence ratio matches `nuc_fluorsc`.
 
 ## Watch out for
 
-- **`SimpleWeightedGraphs` not yet in deps.** If the Dijkstra
-  implementation needs edge weights beyond `Graphs.jl`'s defaults,
-  add it under `[deps]` with a compat bound compatible with Julia
-  1.10 LTS.
-- **`gennode.m` / `delnode.m` / `branchGrowNodes.m`** (listed in
-  Chunk 12) overlap with Chunk 8's vessel-growth logic. Coordinate
-  scope so the Chunk 12 orchestrator stays thin.
-- **The `inpaint_nans` external dependency.** Chunk 9 references it
-  via upstream `genCorticalLightPathLite`; Chunk 8 *may* also touch
-  it for vessel-mask interpolation. If so, port the simple Laplacian
-  inpaint inline rather than adding a dep — it's only a few dozen
-  lines.
-- **Volume sizes in tests must stay small.** A 30×30×30 µm volume
-  at `vres = 2` is `60³ ≈ 216 k` voxels — fine. A 100×100×30 at
-  vres=2 is 1.2 M voxels, slow for routine tests.
-- **Coordinate convention** in upstream is (i, j, k) = (x, y, z)
-  with z increasing into the brain. Keep that — Chunk 7's
-  `collection_mask` expects vasculature volumes indexed the same way.
-- **Pkg.test() may re-resolve to Julia-1.12 versions** if the agent
-  runs on `julia +1`; the resulting RNG flake in Chunk 4's
-  correlation test is a known issue (recorded in plan). Run final
-  verification with `julia` (LTS 1.10) for green-status reporting.
+- **`pseudo_rand_sample_2d` / `pseudo_rand_sample_3d` are now public**
+  and already wired through. Reuse from Chunk 9 directly; don't re-port.
+- **Vessel mask shape from Chunk 8** is `(vol_sz[1]*vres,
+  vol_sz[2]*vres, (vol_sz[3] + vol_depth)*vres)`, with z increasing
+  into the brain. Soma generation should be in the brain-tissue
+  half-volume `vol_sz[3]*vres` (offset by `vol_depth*vres`).
+- **`Graphs.jl` is in `[deps]` but unused.** Chunks 9–12 may still
+  need it; if so, leave the import in `src/NAOMi.jl`. If by Chunk 13
+  no chunk actually uses it, consider removing.
+- **Don't rename or "fix" `VesselNode` / `VesselEdge` field names** —
+  preserve the upstream-aligned convention (per the working-knowledge
+  rule about field-name fidelity).
+- **`MersenneTwister` reproducibility on Julia 1.12** is still
+  fragile for some stochastic tests (Chunk 4 spatial correlation).
+  Chunk 9 should prefer fixed-seed tests with sufficient slack, and
+  run final `Pkg.test()` on Julia 1.10 LTS.
+- **The first call to `simulate_blood_vessels` takes ~0.5s on a
+  modest volume** due to compilation, but subsequent calls are
+  ~0.1s. If Chunk 9+ needs to call into vasculature for soma
+  rejection (somata avoiding vessels), expect noticeable test
+  runtimes at realistic volumes.
 
 ## Working stance reminder
 
 `ANALYSIS_PLAN.md` "Working stance" authorises autonomous chunk
 progression with auto-commits, halting when context drops below 50 %
-free or on any blocked chunk. Chunk 8 is the start of the Volume
-sub-pipeline (Chunks 8–12); each volume chunk is ~3–5 upstream files,
-moderate scope.
+free or on any blocked chunk. Chunk 9 begins the soma generation
+sub-pipeline and is roughly comparable in scope to Chunk 8.
 
 ## Suggested next workflow
 
