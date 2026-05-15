@@ -17,4 +17,5 @@ using Test
     include("scanning/test_psf_fft.jl")
     include("scanning/test_noise.jl")
     include("scanning/test_scan.jl")
+    include("scanning/test_ideal.jl")
 end

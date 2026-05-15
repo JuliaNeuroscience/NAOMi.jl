@@ -24,7 +24,7 @@ session.
 |    13 | Scanning I — PSF FFT + single-frame scan    | complete    |
 |    14 | Scanning II — noise model                   | complete    |
 |    15 | Scanning III — full scan + motion           | complete    |
-|    16 | Ideal components + ground truth             | pending     |
+|    16 | Ideal components + ground truth             | complete    |
 |    17 | I/O + reference demo script                 | pending     |
 |    18 | Documentation pass                          | pending     |
 |    19 | Deferred-work inventory                     | pending     |
@@ -791,6 +791,55 @@ Port `calculateIdealComps.m`, `scan_ideal.m`, `times_from_profs.m`,
 **Tests**: ideal traces extracted from a synthetic movie and ideal profiles
 recover `neur_act.soma` to high correlation.
 
+**Notes**: Implemented in `src/scanning/ideal.jl`. Public exports:
+`calculate_ideal_comps`, `comps2ideals`, `times_from_profs`. End-to-end
+test pipeline runs `scan_volume` on a known 2-cell sinusoidal soma
+activity, then recovers traces from the clean movie via
+`times_from_profs` against the per-cell profiles produced by
+`calculate_ideal_comps`. `Statistics` added to `[deps]` (with
+`compat = "1.10"`); `Statistics.mean` and `Statistics.median` are
+qualified to dodge `Distributions.mean` name collision.
+
+**Deviations from upstream**:
+
+- **`scan_ideal.m` not separately ported.** It depends on the upstream
+  `single_scan_stack.m` (called at line 313) which is absent from the
+  bitbucket repo — `scan_ideal` is therefore non-functional upstream
+  in its full z-stack form. Its working part (a `motion=0` rescan of
+  the volume at baseline-only activity) is subsumed by
+  `calculate_ideal_comps`, which mirrors `calculateIdealComps.m`
+  semantics for the standard pipeline.
+- **`constrainEstToSomas.m` not ported.** It post-processes an `est`
+  struct (`estactIdxs`, `estactideal`, `corrIdxs`, …) produced by
+  downstream analysis (matching estimated components to ground truth),
+  which this port has not built. Deferred to issue tracker (Chunk 19).
+- **NNLS via projected gradient.** Upstream uses TFOCS
+  (`solver_NNLS` / `solver_L1RLS`). The Julia port implements the
+  default `lambda=0` path with a hand-rolled projected-gradient
+  solver (~30 LOC) using a 30-iteration power method to estimate
+  `1 / ‖AᵀA‖`. Recovers two well-separated synthetic profiles to
+  ρ > 0.95 against ground truth.
+- **L1-penalised path deferred.** `lambda > 0` errors with a clear
+  message. Adding it would require either porting TFOCS-style FISTA
+  or pulling in `ProximalOperators.jl`; standard-pipeline tests do
+  not exercise it.
+- **Optional unconstrained-LS path.** `times_from_profs(...; nnls=false)`
+  solves via Julia's `\`, clamping negatives. Useful for fast tests
+  and for matching upstream's `linsolve` branch (which is gated
+  behind `max(lambda(:)) < 0` upstream — a rarely-used sentinel).
+- **Connected-component labelling in `comps2ideals` is 4-connected,
+  hand-rolled** (`_label_connected`, BFS-style). Matches MATLAB
+  `regionprops(BW, 'PixelIdxList')` default connectivity. Avoids
+  adding `ImageMorphology` / `Images` dependency.
+- **Per-cell loop in `calculate_ideal_comps` preserves the
+  `K_soma × n_keep` diagonal-matrix idiom.** With `noise_params=nothing`
+  (the common test path), no noise is applied and `comps[:, :, k]`
+  is bit-exact identifiable as cell `k`'s standalone scan image.
+- **FFT round-off floor.** Clean-pipeline output from `scan_volume`
+  carries ~1e-9 negative values from the FFT-based convolution.
+  `calculate_ideal_comps` does not clip these. Downstream consumers
+  that assume strict non-negativity should `clamp` first.
+
 ### Chunk 17 — I/O + reference demo script
 
 Port `tiff_writer.m`, `tifwrite.m`, `tifwriteblock.m`, `tifappend.m`,
@@ -970,6 +1019,17 @@ statistics.
   distinction). Downstream consumers iterating over connected
   vasculature should filter by `root >= 0`; filtering by `root > 0`
   excludes valid source nodes.
+- **2026-05-15 (CHUNK-016)**: Upstream `scan_ideal.m` references
+  `single_scan_stack.m`, which does not exist in the bitbucket repo;
+  the function is therefore non-functional upstream. The
+  `calculateIdealComps.m` path is the working alternative and is what
+  this port follows. Any future user request for "a multi-z-offset
+  scan stack" should be treated as new work, not a port.
+- **2026-05-15 (CHUNK-016)**: `Distributions.mean` collides with
+  `Statistics.mean` at the `NAOMi` top-level namespace. Always
+  qualify (`Statistics.mean(...)`) inside submodule files when
+  computing sample means — `using Statistics: mean` silently shadows
+  to `Distributions.mean` here.
 - **2026-05-15 (CHUNK-007)**: `Pkg.test()` re-resolves dependencies
   and may pick up newer versions; some stochastic tests
   (Chunk 4 `gen_correlated_spike_trains — spatial correlation`)
@@ -999,4 +1059,5 @@ statistics.
 - 2026-05-15 CHUNK-013 (PSF FFT + single-frame scan) → next: CHUNK-014
 - 2026-05-15 CHUNK-014 (Poisson-Gauss noise + pixel bleed) → next: CHUNK-015
 - 2026-05-15 CHUNK-015 (full scan + motion) → next: CHUNK-016
+- 2026-05-15 CHUNK-016 (ideal components + NNLS time-trace extraction) → next: CHUNK-017
 
