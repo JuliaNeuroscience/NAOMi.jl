@@ -13,4 +13,5 @@ using Test
     include("volume/test_somata.jl")
     include("volume/test_dendrites.jl")
     include("volume/test_axons.jl")
+    include("volume/test_volume.jl")
 end

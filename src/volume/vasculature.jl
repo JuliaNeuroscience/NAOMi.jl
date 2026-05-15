@@ -840,10 +840,13 @@ function grow_capillaries!(nodes::Vector{VesselNode},
     end
     nv = merge(nv, (nnodes = nodeIdx,))
 
-    # Capillary connectivity matrix.
-    vert_capp_idxs = [i for i in 1:nv.nnodes
+    # Capillary connectivity matrix. Cap the iteration at the actual node
+    # array length; `nv.nnodes` may have been bumped past it if late
+    # `gen_node` pushes were skipped (rare with very small volumes).
+    N_nodes_now = min(nv.nnodes, length(nodes))
+    vert_capp_idxs = [i for i in 1:N_nodes_now
                       if nodes[i].type === :capp && nodes[i].root >= 0]
-    orphan_capp_idxs = [i for i in 1:nv.nnodes
+    orphan_capp_idxs = [i for i in 1:N_nodes_now
                         if nodes[i].type === :capp && nodes[i].root < 0]
     connidxs = vcat(vert_capp_idxs, orphan_capp_idxs)
     ncapp = length(connidxs)
@@ -854,7 +857,10 @@ function grow_capillaries!(nodes::Vector{VesselNode},
 
     cappmat = _pos2dists(capppos2)
     for k in 1:ncapp; cappmat[k, k] = Inf; end
-    cappmat[1:nvert_sum, 1:nvert_sum] .= Inf
+    n_vs_cap = min(nvert_sum, ncapp)
+    if n_vs_cap > 0
+        cappmat[1:n_vs_cap, 1:n_vs_cap] .= Inf
+    end
     cappconnmat = falses(ncapp, ncapp)
     if ncapp > 1
         @inbounds for k in 1:ncapp

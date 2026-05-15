@@ -20,7 +20,7 @@ session.
 |     9 | Volume II — soma generation                 | complete    |
 |    10 | Volume III — dendrites                      | complete    |
 |    11 | Volume IV — axons + neuropil background     | complete    |
-|    12 | Volume V — top-level orchestration          | pending     |
+|    12 | Volume V — top-level orchestration          | complete    |
 |    13 | Scanning I — PSF FFT + single-frame scan    | pending     |
 |    14 | Scanning II — noise model                   | pending     |
 |    15 | Scanning III — full scan + motion           | pending     |
@@ -660,6 +660,34 @@ Port `simulate_neural_volume.m`, `branchGrowNodes.m`, `gennode.m`,
 **Tests**: end-to-end smoke generates a tiny 30×30×20 µm volume in <60 s
 with consistent component-array dimensions.
 
+**Notes**: `simulate_neural_volume` lives in `src/volume/volume.jl`
+and produces a `NeuralVolume` struct mirroring upstream's `vol_out`
+fields. Test volume (30×30×20 µm at vres=2) generates in ~1 s.
+
+**Deviations from upstream**:
+
+- **All upstream helpers (`gennode`, `delnode`, `nodesToConn`,
+  `genconn`, `connToVol`, `branchGrowNodes`) were already ported in
+  Chunk 8** alongside the vasculature code; Chunk 12 only wires them.
+- **`resampVolume.m` not ported.** Upstream's `resampVolume.m` is an
+  empty stub with no implementation. Skipping per upstream's
+  contract.
+- **Output is a `NeuralVolume` struct** rather than upstream's
+  hand-built `struct vol_out`. Fields preserved verbatim:
+  `neur_vol`, `neur_num`, `neur_soma`, `neur_num_AD`, `gp_nuc`,
+  `gp_soma`, `gp_vals`, `gp_bgvals`, `bg_proc`, `neur_ves`,
+  `neur_ves_all`, `locs`. Adds `Vcells`/`Vnucs` (the per-cell soma
+  and nucleus surface meshes) for downstream chunks that need them.
+- **Two latent bugs fixed in `grow_capillaries!`** (Chunk 8) that
+  surfaced only on small test volumes:
+  (a) `nv.nnodes` could exceed `length(nodes)` when late `gen_node`
+  pushes were skipped; the comprehension that built `vert_capp_idxs`
+  is now capped at `length(nodes)`.
+  (b) `cappmat[1:nvert_sum, 1:nvert_sum] .= Inf` now guards against
+  `nvert_sum > ncapp` (which happens on tiny volumes where no
+  capillaries actually got placed). Both fixes are no-ops on
+  upstream-scale volumes.
+
 ### Chunk 13 — Scanning I: PSF FFT + single-frame scan
 
 Port `psf_fft.m`, `single_scan.m`, `scan_volume_frame.m`,
@@ -896,4 +924,5 @@ statistics.
 - 2026-05-15 CHUNK-009 (soma generation + rasterization) → next: CHUNK-010
 - 2026-05-15 CHUNK-010 (dendrites + smoothCellBody + setCellFluoresence) → next: CHUNK-011
 - 2026-05-15 CHUNK-011 (axons + neuropil background) → next: CHUNK-012
+- 2026-05-15 CHUNK-012 (top-level neural volume orchestrator) → next: CHUNK-013
 
