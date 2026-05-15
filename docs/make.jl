@@ -12,8 +12,18 @@ makedocs(;
         edit_link="main",
         assets=String[],
     ),
+    checkdocs=:exports,
     pages=[
         "Home" => "index.md",
+        "Getting started" => "getting-started.md",
+        "API" => [
+            "Parameters" => "parameters.md",
+            "Time traces" => "timetraces.md",
+            "Optics" => "optics.md",
+            "Volume" => "volume.md",
+            "Scanning" => "scanning.md",
+            "I/O" => "io.md",
+        ],
     ],
 )
 

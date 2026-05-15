@@ -26,7 +26,7 @@ session.
 |    15 | Scanning III — full scan + motion           | complete    |
 |    16 | Ideal components + ground truth             | complete    |
 |    17 | I/O + reference demo script                 | complete    |
-|    18 | Documentation pass                          | pending     |
+|    18 | Documentation pass                          | complete    |
 |    19 | Deferred-work inventory                     | pending     |
 
 ## Working stance
@@ -901,6 +901,40 @@ Docstrings for every exported symbol; Documenter.jl site under `docs/` with
 sections matching the five modules; "getting started" page reproducing the
 demo; citation on the index. Hook into the existing CI workflow.
 
+**Notes**: All 93 exported symbols already carried docstrings from
+their porting chunks — verified via `Base.Docs.doc` (zero gaps), so
+this chunk was structural, not write-from-scratch. Documenter site
+expanded from a single `@autodocs` page to:
+
+- `index.md` — overview, five-stage table, install, Song et al. 2021
+  citation (with DOI).
+- `getting-started.md` — end-to-end walkthrough mirroring
+  `examples/standard_pipeline.jl` (plain code blocks, not `@example`,
+  to keep the doc build fast).
+- Six API pages with explicit `@docs` blocks: `parameters.md`,
+  `timetraces.md`, `optics.md`, `volume.md`, `scanning.md`, `io.md`.
+
+The existing `.github/workflows/CI.yml` already has a `docs` job
+(`julia-actions/julia-docdeploy`) plus a doctest step — no CI changes
+needed.
+
+**Deviations / decisions**:
+
+- **`checkdocs=:exports`** set in `makedocs`. Two internal helpers
+  (`dilate2d_disk!`, `paint_ball3d!` in `volume/vasculature.jl`)
+  carry docstrings but are not exported; Documenter 1.x's default
+  `checkdocs=:all` flagged them as "not included in the manual".
+  `:exports` scopes the check to the public API, which is the
+  intent — internal helpers stay documented in-source without
+  needing a manual page.
+- **All `@docs` blocks list symbols explicitly** (rather than
+  `@autodocs` by file) so the API pages control ordering and grouping;
+  every exported symbol appears exactly once across the six pages.
+- Local `docs/make.jl` build succeeds; doctests run clean in the
+  Documenter `Doctest` stage. Deployment is CI-only (local build
+  prints the expected "could not auto-detect building environment"
+  skip).
+
 ### Chunk 19 — Deferred-work inventory
 
 File GitHub issues for everything out-of-scope: GUI, all variant scripts,
@@ -1105,4 +1139,5 @@ statistics.
 - 2026-05-15 CHUNK-015 (full scan + motion) → next: CHUNK-016
 - 2026-05-15 CHUNK-016 (ideal components + NNLS time-trace extraction) → next: CHUNK-017
 - 2026-05-15 CHUNK-017 (TIFF I/O + reference demo script) → next: CHUNK-018
+- 2026-05-15 CHUNK-018 (Documenter site + getting-started page) → next: CHUNK-019
 
