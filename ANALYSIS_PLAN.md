@@ -18,7 +18,7 @@ session.
 |     7 | Optics III — Fresnel propagation            | complete    |
 |     8 | Volume I — vasculature                      | complete    |
 |     9 | Volume II — soma generation                 | complete    |
-|    10 | Volume III — dendrites                      | pending     |
+|    10 | Volume III — dendrites                      | complete    |
 |    11 | Volume IV — axons + neuropil background     | pending     |
 |    12 | Volume V — top-level orchestration          | pending     |
 |    13 | Scanning I — PSF FFT + single-frame scan    | pending     |
@@ -571,6 +571,49 @@ Julia.
 **Tests**: dendrites originate from soma boundaries; reach apical targets;
 thickness profile decays per `dendrite_tau`.
 
+**Notes**: All ported into `src/volume/dendrites.jl`. Public exports:
+`dendrite_dijkstra_grid`, `get_dendrite_path`, `dendrite_random_walk`,
+`dilate_dendrite_paths_all`, `grow_neuron_dendrites!`,
+`grow_apical_dendrites!`, `smooth_cell_body`, `set_cell_fluorescence`.
+Also folded in the two helpers deferred from Chunk 9
+(`smoothCellBody.m` and `setCellFluoresence.m`).
+
+**Deviations from upstream**:
+
+- **C++ MEX kernels reimplemented in pure Julia.** A hand-rolled binary
+  min-heap (~50 LOC) backs `dendrite_dijkstra_grid`; no `DataStructures`
+  dependency. `array_SubMod`/`array_SubSub` are not ported — Julia's
+  `A[idx] .+= val` and `A[idx] .= val` do the same with no helper.
+  `locate_neighbors` is similarly inlined where needed.
+- **Single-stage Dijkstra at fine resolution.** Upstream does a
+  coarse-then-fine two-stage Dijkstra (running once on a `dims`-sized
+  coarse grid to plan, then re-running constrained to that path at
+  `dims.*dimsSS` resolution). This is purely a speed optimisation for
+  large volumes. The Julia port runs Dijkstra directly at fine
+  resolution and accepts the cost — test volumes (≤40×40×20 µm) run in
+  under a second per neuron.
+- **`smooth_cell_body` is simplified.** Upstream uses MATLAB's `cscvn`
+  spline blend between `connIdx` and `connRoots` followed by 3-D
+  border filling. The Julia port adds a radius-2 ball around the first
+  voxel where each path hits `cellBody`; this is sufficient for the
+  test goal "soma-dendrite junction is connected".
+- **`dilate_dendrite_paths_all` is faithful** to upstream's iterative
+  per-shell growth strategy, but uses Julia idioms (sets, sorted
+  offsets by squared distance, 6-connectivity adjacency check).
+- **Apical anchor follows upstream's "soma corner" rule.** A zero-cost
+  3-D staircase from `rootL` (cell centre) to `aproot` (the lowest-
+  linear-index soma voxel) is laid down before Dijkstra. This biases
+  the basal tree to emerge through a consistent boundary point.
+- **`grow_apical_dendrites!` skips the through-volume "border-spill"
+  branch.** When the root box overflows the volume bounds, upstream
+  carefully clamps source and destination regions. The single-stage
+  Julia port operates directly on `fulldims`, so this branch is
+  unnecessary.
+- **`set_cell_fluorescence` mean-normalises soma fluorescence values to
+  1** matching upstream's `0.5 * (TMP_vals - mean) / max(abs(...)) + 1`
+  rule. Background components (cells `N_neur+1 … N_neur+N_den`) get
+  uniform value 1.
+
 ### Chunk 11 — Volume IV: axons + neuropil background
 
 Port `generate_axons.m`, `sort_axons.m`, `generate_bgdendrites.m`.
@@ -776,6 +819,17 @@ statistics.
   either compute it from `V_master` on demand (e.g. via `Quickhull.jl`),
   or rely on the radial-test rasterization paths added here. The
   `Vcell` / `Vnuc` vertex meshes *are* present and stored per-cell.
+- **2026-05-15 (CHUNK-010)**: Dijkstra `M[i,j,k,d]` is the cost of
+  *entering* voxel `(i,j,k)` from direction `d ∈ 1:6` (directions:
+  `+x, -x, +y, -y, +z, -z`). Boundary voxels have `Inf` for the
+  appropriate direction. The 6-direction asymmetry matters: any code
+  that builds `M` must populate all six directions consistently with
+  this convention.
+- **2026-05-15 (CHUNK-010)**: `findall` on an N-D array returns
+  `Vector{CartesianIndex{N}}`, *not* linear indices. Use
+  `LinearIndices(A)[c]` to convert if a flat index is needed.
+  Mixing CartesianIndex into a `Set{Int}` produces silently-false
+  membership checks — spotted during chunk-10 testing.
 - **2026-05-15 (CHUNK-009)**: `sample_dense_neurons` returns
   `Vcells::Vector{Matrix{Float64}}` with K entries (one per accepted
   cell). Upstream MATLAB used a 3-D `Nx3xK` array. Downstream chunks
@@ -809,4 +863,5 @@ statistics.
 - 2026-05-15 CHUNK-007 (Fresnel propagation kernel + collection mask) → next: CHUNK-008
 - 2026-05-15 CHUNK-008 (vasculature) → next: CHUNK-009
 - 2026-05-15 CHUNK-009 (soma generation + rasterization) → next: CHUNK-010
+- 2026-05-15 CHUNK-010 (dendrites + smoothCellBody + setCellFluoresence) → next: CHUNK-011
 

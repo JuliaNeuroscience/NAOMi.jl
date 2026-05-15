@@ -11,4 +11,5 @@ using Test
     include("optics/test_propagation.jl")
     include("volume/test_vasculature.jl")
     include("volume/test_somata.jl")
+    include("volume/test_dendrites.jl")
 end
