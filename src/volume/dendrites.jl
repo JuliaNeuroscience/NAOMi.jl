@@ -85,6 +85,13 @@ end
 # threads them through every per-cell call. `heap` is likewise reused (its
 # capacity is retained across calls).
 #
+# `M` has size `(6, H, W, D)`: `M[d, i, j, k]` is the cost of *entering*
+# voxel `(i, j, k)` from direction `d ∈ 1:6` (`+x, -x, +y, -y, +z, -z`).
+# The direction-first layout puts a voxel's six edge weights in one
+# contiguous run, so the inner relaxation loop reads them with unit
+# stride. Neighbour voxels are reached by adding a fixed linear-index
+# offset (`±1, ±H, ±H·W`), avoiding per-step cartesian/linear conversion.
+#
 # With a non-empty `targets` list (linear voxel indices) the search stops
 # as soon as every target voxel has been settled. This is exact: Dijkstra
 # settles voxels in nondecreasing distance order, so once a voxel is
@@ -96,10 +103,9 @@ function _dijkstra!(distance::AbstractArray{Float32,3},
                     M::AbstractArray{<:Real,4},
                     root::NTuple{3,<:Integer},
                     targets::AbstractVector{<:Integer})
-    H, W, D = size(M, 1), size(M, 2), size(M, 3)
-    size(M, 4) == 6 || throw(ArgumentError("M must have size (H, W, D, 6)"))
-    lin = LinearIndices((H, W, D))
-    cart = CartesianIndices((H, W, D))
+    size(M, 1) == 6 || throw(ArgumentError("M must have size (6, H, W, D)"))
+    H, W, D = size(M, 2), size(M, 3), size(M, 4)
+    HW = H * W
 
     @inbounds for li in touched
         distance[li] = Inf32
@@ -109,7 +115,7 @@ function _dijkstra!(distance::AbstractArray{Float32,3},
     empty!(heap.keys)
     empty!(heap.vals)
 
-    root_li = lin[root...]
+    root_li = root[1] + (root[2] - 1) * H + (root[3] - 1) * HW
     distance[root_li] = 0.0f0
     pathfrom[root_li] = 0
     push!(touched, root_li)
@@ -122,8 +128,8 @@ function _dijkstra!(distance::AbstractArray{Float32,3},
     end
     n_left = length(target_set)
 
-    offsets = ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
-               (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    # Linear-index step for each of the 6 directions (+x, -x, +y, -y, +z, -z).
+    offsets = (1, -1, H, -H, HW, -HW)
 
     while !isempty(heap)
         cn_d, cn_idx = _pop!(heap)
@@ -133,17 +139,33 @@ function _dijkstra!(distance::AbstractArray{Float32,3},
             n_left -= 1
             n_left == 0 && break
         end
-        c = cart[cn_idx]
+        # 0-based grid coordinates of the current voxel, for bounds checks.
+        z = (cn_idx - 1) ÷ HW
+        rem = (cn_idx - 1) - z * HW
+        y = rem ÷ H
+        x = rem - y * H
         @inbounds for d in 1:6
-            off = offsets[d]
-            ni = c[1] + off[1]
-            nj = c[2] + off[2]
-            nk = c[3] + off[3]
-            (1 <= ni <= H && 1 <= nj <= W && 1 <= nk <= D) || continue
-            w = M[ni, nj, nk, d]
+            # Skip any direction that would step off the grid.
+            if d == 1
+                x == H - 1 && continue
+            elseif d == 2
+                x == 0 && continue
+            elseif d == 3
+                y == W - 1 && continue
+            elseif d == 4
+                y == 0 && continue
+            elseif d == 5
+                z == D - 1 && continue
+            else
+                z == 0 && continue
+            end
+            nidx = cn_idx + offsets[d]
+            # Full linear index into the (6,H,W,D) array; `M[d, nidx]`
+            # would be partial linear indexing, which `--check-bounds=yes`
+            # rejects.
+            w = M[d + 6 * (nidx - 1)]
             isfinite(w) || continue
             ndist = cn_d + Float32(w)
-            nidx = lin[ni, nj, nk]
             if ndist < distance[nidx]
                 distance[nidx] == Inf32 && push!(touched, nidx)
                 distance[nidx] = ndist
@@ -182,7 +204,9 @@ function dendrite_dijkstra_grid(M::AbstractArray{<:Real,4},
     size(M, 4) == 6 || throw(ArgumentError("M must have size (H, W, D, 6)"))
     distance = fill(Float32(Inf), H, W, D)
     pathfrom = zeros(Int, H, W, D)
-    _dijkstra!(distance, pathfrom, _MinHeap(), Int[], M, root, Int[])
+    # `_dijkstra!` works on the direction-first `(6, H, W, D)` layout.
+    _dijkstra!(distance, pathfrom, _MinHeap(), Int[],
+               permutedims(M, (4, 1, 2, 3)), root, Int[])
     return distance, pathfrom
 end
 
@@ -434,24 +458,30 @@ end
 # Build the 6-direction edge-weight array for Dijkstra-on-grid
 # ---------------------------------------------------------------------------
 
-# M[i,j,k,d] = cost to enter voxel (i,j,k) from direction d.
+# M[d,i,j,k] = cost to enter voxel (i,j,k) from direction d. The
+# direction-first layout matches `_dijkstra!`'s contiguous edge-weight
+# reads. The random component is drawn in `(i,j,k,d)` order so the values
+# are independent of layout.
 function _build_dendrite_M(dims::NTuple{3,Int},
                           obstruction::AbstractArray{<:Real,3},
                           dweight::Real, bweight::Real;
                           rng::AbstractRNG=Random.default_rng())
     H, W, D = dims
-    M = ones(Float32, H, W, D, 6) .+ Float32(dweight) .* rand(rng, Float32, H, W, D, 6)
-    M[1,   :, :, 1] .= Inf32
-    M[end, :, :, 2] .= Inf32
-    M[:, 1,   :, 3] .= Inf32
-    M[:, end, :, 4] .= Inf32
-    M[:, :, 1,   5] .= Inf32
-    M[:, :, end, 6] .= Inf32
+    randbuf = rand(rng, Float32, H, W, D, 6)
+    M = ones(Float32, 6, H, W, D)
+    dw = Float32(dweight)
+    @inbounds for d in 1:6, k in 1:D, j in 1:W, i in 1:H
+        M[d, i, j, k] += dw * randbuf[i, j, k, d]
+    end
+    M[1, 1, :, :] .= Inf32
+    M[2, H, :, :] .= Inf32
+    M[3, :, 1, :] .= Inf32
+    M[4, :, W, :] .= Inf32
+    M[5, :, :, 1] .= Inf32
+    M[6, :, :, D] .= Inf32
     fillfrac = Float32.(obstruction .> 0)
     pen = -Float32(bweight) .* log.(max.(1f-6, 1 .- 2 .* max.(0.0f0, fillfrac .- 0.5f0)))
-    for d in 1:6
-        M[:, :, :, d] .+= pen
-    end
+    M .+= reshape(pen, 1, H, W, D)
     return M
 end
 
@@ -553,31 +583,31 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
             # Walk x from rootL[1] → ap[1] with y=rootL[2], z=rootL[3]
             if ap[1] > rootL[1]
                 for v in rootL[1]:ap[1]
-                    M[v, rootL[2], rootL[3], 1] = 0f0
+                    M[1, v, rootL[2], rootL[3]] = 0f0
                 end
             elseif ap[1] < rootL[1]
                 for v in ap[1]:rootL[1]
-                    M[v, rootL[2], rootL[3], 2] = 0f0
+                    M[2, v, rootL[2], rootL[3]] = 0f0
                 end
             end
             # Walk y with x=ap[1], z=rootL[3]
             if ap[2] > rootL[2]
                 for v in rootL[2]:ap[2]
-                    M[ap[1], v, rootL[3], 3] = 0f0
+                    M[3, ap[1], v, rootL[3]] = 0f0
                 end
             elseif ap[2] < rootL[2]
                 for v in ap[2]:rootL[2]
-                    M[ap[1], v, rootL[3], 4] = 0f0
+                    M[4, ap[1], v, rootL[3]] = 0f0
                 end
             end
             # Walk z with x=ap[1], y=ap[2]
             if ap[3] > rootL[3]
                 for v in rootL[3]:ap[3]
-                    M[ap[1], ap[2], v, 5] = 0f0
+                    M[5, ap[1], ap[2], v] = 0f0
                 end
             elseif ap[3] < rootL[3]
                 for v in ap[3]:rootL[3]
-                    M[ap[1], ap[2], v, 6] = 0f0
+                    M[6, ap[1], ap[2], v] = 0f0
                 end
             end
         end
