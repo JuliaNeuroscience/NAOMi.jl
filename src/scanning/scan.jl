@@ -221,6 +221,10 @@ function scan_volume(neur_vol::NeuralVolume,
     tasks = map(1:nchunks) do c
         Threads.@spawn begin
             TMPvol = zeros(Float32, H, W, D)
+            # One FFT plan pair per task, reused across its chunk of frames.
+            fwd_plan = plan_fft(zeros(ComplexF32, size(sv.freq_psf)), (1, 2))
+            inv_plan = plan_ifft(zeros(ComplexF32, size(sv.freq_psf, 1),
+                                       size(sv.freq_psf, 2)), (1, 2))
             for kk in c:nchunks:nt
                 # Build TMPvol with this frame's activity.
                 fill!(TMPvol, 0f0)
@@ -255,7 +259,8 @@ function scan_volume(neur_vol::NeuralVolume,
                 z_hi = min(z_loc + Np3 - 1, D)
                 sub_vol = @view TMPvol[:, :, z_loc:z_hi]
                 clean_img = sig .* single_scan(sub_vol, (Np1, Np2, Np3), sv.freq_psf;
-                                               z_sub=scan_params.scan_avg, freq_opt=true)
+                                               z_sub=scan_params.scan_avg, freq_opt=true,
+                                               fwd_plan=fwd_plan, inv_plan=inv_plan)
 
                 # Per-row shift to model motion + buffer crop.
                 if mot_opt && size(clean_img, 1) > 2 * scan_buff &&

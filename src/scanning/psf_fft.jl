@@ -39,32 +39,39 @@ function psf_fft(vol_sz::NTuple{3,<:Integer}, psf::AbstractArray{<:Real,3};
         for k in axes(psf2, 3)
             padded[1:size(psf2, 1), 1:size(psf2, 2), k] .= ComplexF32.(@view psf2[:, :, k])
         end
-        return fft(fft(padded, 1), 2)
+        return fft(padded, (1, 2))
     else
         sz = (vol_sz[1] + size(psf, 1) - 1, vol_sz[2] + size(psf, 2) - 1)
         padded = zeros(ComplexF32, sz[1], sz[2], size(psf, 3))
         for k in axes(psf, 3)
             padded[1:size(psf, 1), 1:size(psf, 2), k] .= ComplexF32.(@view psf[:, :, k])
         end
-        return fft(fft(padded, 1), 2)
+        return fft(padded, (1, 2))
     end
 end
 
 """
     single_scan(neur_vol::AbstractArray{<:Real,3}, psf_sz::NTuple{3,<:Integer},
                 psf_or_freq::AbstractArray; z_sub::Integer=1,
-                freq_opt::Bool=false)
+                freq_opt::Bool=false, fwd_plan=nothing, inv_plan=nothing)
         -> Matrix{Float32}
 
 Convolve a 3-D fluorescence volume with the supplied PSF (either spatial
 or pre-FFTed). Returns a 2-D image cropped to the volume's xy extent.
 Ports `single_scan.m`. With `freq_opt=true`, `psf_or_freq` must be the
 output of [`psf_fft`](@ref).
+
+`fwd_plan` / `inv_plan` are optional pre-built FFT plans (see
+`AbstractFFTs.plan_fft`) for the frequency-domain path: `fwd_plan` for a
+batched 2-D transform of a `size(psf_or_freq)` array, `inv_plan` for the
+inverse 2-D transform of its `(:, :)` slice. Supplying them lets a caller
+that scans many frames avoid re-planning on every call.
 """
 function single_scan(neur_vol::AbstractArray{<:Real,3},
                      psf_sz::NTuple{3,<:Integer},
                      psf_or_freq::AbstractArray;
-                     z_sub::Integer=1, freq_opt::Bool=false)
+                     z_sub::Integer=1, freq_opt::Bool=false,
+                     fwd_plan=nothing, inv_plan=nothing)
     N3 = size(neur_vol, 3)
     if z_sub > 1
         N_slce = cld(N3, z_sub)
@@ -99,20 +106,24 @@ function single_scan(neur_vol::AbstractArray{<:Real,3},
     end
 
     if freq_opt
-        sz = (size(psf_or_freq, 1), size(psf_or_freq, 2))
-        # Convolve each axial slice in frequency, sum along z.
-        acc = zeros(ComplexF32, sz[1], sz[2])
-        nz = min(size(neur_vol_eff, 3), size(psf_or_freq, 3))
+        sz1, sz2, Npz = size(psf_or_freq)
+        H1, W1 = size(neur_vol_eff, 1), size(neur_vol_eff, 2)
+        nz = min(size(neur_vol_eff, 3), Npz)
+        # Pad every axial slice into one (sz1, sz2, Npz) array and run a
+        # single batched 2-D FFT over all slices, then convolve with the
+        # pre-FFTed PSF and sum along z.
+        slabs = zeros(ComplexF32, sz1, sz2, Npz)
         for k in 1:nz
-            slab = zeros(ComplexF32, sz[1], sz[2])
-            slab[1:size(neur_vol_eff, 1), 1:size(neur_vol_eff, 2)] .=
-                ComplexF32.(@view neur_vol_eff[:, :, k])
-            fS = fft(fft(slab, 1), 2)
-            acc .+= fS .* @view psf_or_freq[:, :, k]
+            @view(slabs[1:H1, 1:W1, k]) .= ComplexF32.(@view neur_vol_eff[:, :, k])
         end
-        img_full = real.(ifft(ifft(acc, 1), 2))
-        y_ix = cld(psf_sz[1] - 1, 2) .+ (1, size(neur_vol_eff, 1))
-        y_jx = cld(psf_sz[2] - 1, 2) .+ (1, size(neur_vol_eff, 2))
+        fS = fwd_plan === nothing ? fft(slabs, (1, 2)) : fwd_plan * slabs
+        acc = zeros(ComplexF32, sz1, sz2)
+        for k in 1:nz
+            @views acc .+= fS[:, :, k] .* psf_or_freq[:, :, k]
+        end
+        img_full = real.(inv_plan === nothing ? ifft(acc, (1, 2)) : inv_plan * acc)
+        y_ix = cld(psf_sz[1] - 1, 2) .+ (1, H1)
+        y_jx = cld(psf_sz[2] - 1, 2) .+ (1, W1)
         return Float32.(img_full[y_ix[1]:y_ix[2], y_jx[1]:y_jx[2]])
     else
         # Spatial-domain conv2 per slice, "same" cropping.
