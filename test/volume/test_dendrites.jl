@@ -135,6 +135,44 @@ end
     @test count(neur_num2 .> 0) >= count(neur_num .> 0)
 end
 
+@testset "couple_dendrites=true — serial coupled growth" begin
+    vol = VolumeParams(vol_sz=[40, 40, 20], vol_depth=15.0, vres=2.0,
+                       min_dist=12.0, N_neur=3)
+    finalize!(vol)
+    np = NeuronParams()
+    dp = DendriteParams()
+    H = Int(vol.vol_sz[1] * vol.vres)
+    W = Int(vol.vol_sz[2] * vol.vres)
+    totalD = Int((vol.vol_sz[3] + vol.vol_depth) * vol.vres)
+    neur_ves = falses(H, W, totalD)
+    locs, Vcells, Vnucs, _ =
+        sample_dense_neurons(np, vol, neur_ves; rng=MersenneTwister(0))
+    neur_soma, _, gp_nuc, gp_soma =
+        generate_neural_volume(np, vol, locs, Vcells, Vnucs, neur_ves)
+
+    grow(mode) = grow_neuron_dendrites!(vol, dp, neur_soma, neur_ves, locs,
+                                        gp_nuc, gp_soma; rng=MersenneTwister(0),
+                                        couple_dendrites=mode)
+    nn_c, ad_c, _ = grow(true)
+    @test eltype(nn_c) === UInt16
+    @test size(nn_c) == size(neur_soma)
+    @test count(nn_c .> 0) > count(neur_soma .> 0)   # dendrites were added
+
+    # Coupled growth is deterministic given the seed.
+    nn_c2, = grow(true)
+    @test nn_c2 == nn_c
+    # ...and differs from the default parallel, decoupled growth.
+    nn_p, = grow(false)
+    @test nn_p != nn_c
+
+    # `grow_apical_dendrites!` accepts the same option.
+    na_c, nad_c = grow_apical_dendrites!(vol, dp, nn_c, ad_c, gp_nuc, gp_soma;
+                                         rng=MersenneTwister(0),
+                                         couple_dendrites=true)
+    @test eltype(na_c) === UInt16
+    @test count(na_c .> 0) >= count(nn_c .> 0)
+end
+
 @testset "set_cell_fluorescence — basic structure" begin
     vol = VolumeParams(vol_sz=[40, 40, 20], vol_depth=15.0, vres=2.0,
                        min_dist=12.0, N_neur=2)

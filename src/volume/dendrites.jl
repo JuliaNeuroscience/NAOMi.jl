@@ -458,20 +458,26 @@ end
 # Build the 6-direction edge-weight array for Dijkstra-on-grid
 # ---------------------------------------------------------------------------
 
-# M[d,i,j,k] = cost to enter voxel (i,j,k) from direction d. The
-# direction-first layout matches `_dijkstra!`'s contiguous edge-weight
-# reads. The random component is drawn in `(i,j,k,d)` order so the values
-# are independent of layout.
-function _build_dendrite_M(dims::NTuple{3,Int},
-                          obstruction::AbstractArray{<:Real,3},
-                          dweight::Real, bweight::Real;
-                          rng::AbstractRNG=Random.default_rng())
+# Fill a preallocated `(6, H, W, D)` edge-weight array in place:
+# `M[d,i,j,k]` is the cost of entering voxel `(i,j,k)` from direction `d`.
+#
+# Upstream's obstruction penalty `-bweight·log(max(1e-6, 1-2·max(0, f-0.5)))`
+# collapses to two values because the fill fraction `f` is 0 or 1: it is 0
+# in free voxels and `-bweight·log(1e-6)` in obstructed ones.
+function _build_dendrite_M!(M::Array{Float32,4},
+                            dims::NTuple{3,Int},
+                            obstruction::AbstractArray{<:Real,3},
+                            dweight::Real, bweight::Real;
+                            rng::AbstractRNG=Random.default_rng())
     H, W, D = dims
-    randbuf = rand(rng, Float32, H, W, D, 6)
-    M = ones(Float32, 6, H, W, D)
+    rand!(rng, M)                       # uniform [0,1) random component
     dw = Float32(dweight)
-    @inbounds for d in 1:6, k in 1:D, j in 1:W, i in 1:H
-        M[d, i, j, k] += dw * randbuf[i, j, k, d]
+    penval = -Float32(bweight) * log(1f-6)
+    @inbounds for k in 1:D, j in 1:W, i in 1:H
+        add = 1f0 + (obstruction[i, j, k] > 0 ? penval : 0f0)
+        for d in 1:6
+            M[d, i, j, k] = add + dw * M[d, i, j, k]
+        end
     end
     M[1, 1, :, :] .= Inf32
     M[2, H, :, :] .= Inf32
@@ -479,15 +485,281 @@ function _build_dendrite_M(dims::NTuple{3,Int},
     M[4, :, W, :] .= Inf32
     M[5, :, :, 1] .= Inf32
     M[6, :, :, D] .= Inf32
-    fillfrac = Float32.(obstruction .> 0)
-    pen = -Float32(bweight) .* log.(max.(1f-6, 1 .- 2 .* max.(0.0f0, fillfrac .- 0.5f0)))
-    M .+= reshape(pen, 1, H, W, D)
     return M
 end
 
 # ---------------------------------------------------------------------------
 # Per-neuron dendrite growth (basal tree + local apical tree)
 # ---------------------------------------------------------------------------
+
+# Thread-local scratch for one chunk of the per-neuron dendrite loop. The
+# large arrays (`M`, the Dijkstra and fine-path buffers) are allocated
+# once per task and reused across every neuron in that task's chunk,
+# instead of once per neuron.
+struct _DendriteScratch
+    obstruction::Array{Float32,3}
+    M::Array{Float32,4}
+    dij_dist::Array{Float32,3}
+    dij_path::Array{Int,3}
+    dij_heap::_MinHeap
+    dij_touched::Vector{Int}
+    finepathsVal::Array{Float32,3}
+    finepathsAD::BitArray{3}
+end
+
+function _DendriteScratch(fulldims::NTuple{3,Int})
+    H, W, D = fulldims
+    _DendriteScratch(Array{Float32}(undef, fulldims),
+                     Array{Float32}(undef, 6, H, W, D),
+                     fill(Inf32, fulldims),
+                     zeros(Int, fulldims),
+                     _MinHeap(), Int[],
+                     zeros(Float32, fulldims),
+                     falses(fulldims))
+end
+
+# A `_DendriteScratch` holds roughly this many bytes per grid voxel
+# (`M` dominates at 6·Float32; plus obstruction, the Dijkstra distance
+# and predecessor arrays, and the fine-path buffers).
+const _DENDRITE_SCRATCH_BYTES_PER_VOXEL = 48
+
+# Pick the number of parallel tasks for the dendrite stage: one per
+# thread, but capped so the per-task scratch buffers fit within about
+# half of currently-free memory.
+function _dendrite_nchunks(fulldims::NTuple{3,Int})
+    per_task = _DENDRITE_SCRATCH_BYTES_PER_VOXEL * prod(fulldims)
+    budget = Sys.free_memory() ÷ 2
+    cap = max(1, Int(budget ÷ per_task))
+    return min(Threads.nthreads(), cap)
+end
+
+# Run `work!(scratch, j)` for every neuron `j in 1:n`, spreading the
+# neurons over `nchunks` tasks. Each task allocates its own scratch via
+# `make_scratch()` and processes a round-robin slice of the neurons.
+# `work!` must confine its writes to per-`j` slots so the tasks never
+# touch the same memory.
+function _foreach_neuron_threaded(work!::F, make_scratch::G,
+                                  n::Int, nchunks::Int) where {F,G}
+    nchunks = clamp(nchunks, 1, max(1, n))
+    tasks = map(1:nchunks) do c
+        Threads.@spawn begin
+            scratch = make_scratch()
+            for j in c:nchunks:n
+                work!(scratch, j)
+            end
+        end
+    end
+    foreach(wait, tasks)
+    return nothing
+end
+
+# Grow one neuron's basal + local-apical dendrite trees. The big arrays in
+# `scratch` are overwritten in place; `scratch.finepathsVal`/`finepathsAD`
+# are left zeroed for the next neuron. Returns this neuron's sparse
+# contribution: `idxs` (linear voxel indices it labels), `vals` (fine-path
+# thickness at those voxels), `ad` (apical-dendrite flag), and `smoothed`
+# (soma-junction voxels for `gp_soma_aug`).
+function _grow_one_basal!(scratch::_DendriteScratch, rng::AbstractRNG,
+                          j::Int, rootL::NTuple{3,Int},
+                          gp_soma_j::AbstractVector,
+                          cellVolume0::AbstractArray{Float32,3},
+                          fulldims::NTuple{3,Int}, lin_full::LinearIndices{3},
+                          dtParams::Vector{Float64}, atParams::Vector{Float64},
+                          dweight::Real, bweight::Real,
+                          thicknessScale::Real, rallexp::Real, dendVar::Real)
+    H, W, D = fulldims
+    obstruction = scratch.obstruction
+    copyto!(obstruction, cellVolume0)
+    for x in gp_soma_j
+        obstruction[x] = 0f0
+    end
+    cellBody = Int[Int(x) for x in gp_soma_j]
+
+    M = scratch.M
+    _build_dendrite_M!(M, fulldims, obstruction, dweight, bweight; rng=rng)
+    # Anchor: connect rootL → soma "corner" (the lowest-linear-index
+    # soma voxel) with a 3-D staircase of zero-cost edges, matching
+    # upstream `aproot` semantics in `growNeuronDendrites.m`
+    # (lines 191-204).
+    if !isempty(gp_soma_j)
+        ap_li = Int(minimum(gp_soma_j))
+        ap = Tuple(CartesianIndices(fulldims)[ap_li])
+        # Walk x from rootL[1] → ap[1] with y=rootL[2], z=rootL[3]
+        if ap[1] > rootL[1]
+            for v in rootL[1]:ap[1]
+                M[1, v, rootL[2], rootL[3]] = 0f0
+            end
+        elseif ap[1] < rootL[1]
+            for v in ap[1]:rootL[1]
+                M[2, v, rootL[2], rootL[3]] = 0f0
+            end
+        end
+        # Walk y with x=ap[1], z=rootL[3]
+        if ap[2] > rootL[2]
+            for v in rootL[2]:ap[2]
+                M[3, ap[1], v, rootL[3]] = 0f0
+            end
+        elseif ap[2] < rootL[2]
+            for v in ap[2]:rootL[2]
+                M[4, ap[1], v, rootL[3]] = 0f0
+            end
+        end
+        # Walk z with x=ap[1], y=ap[2]
+        if ap[3] > rootL[3]
+            for v in rootL[3]:ap[3]
+                M[5, ap[1], ap[2], v] = 0f0
+            end
+        elseif ap[3] < rootL[3]
+            for v in ap[3]:rootL[3]
+                M[6, ap[1], ap[2], v] = 0f0
+            end
+        end
+    end
+    # Basal-tree endpoints.
+    numdt = max(1, Int(round(dtParams[1] + dtParams[5] * randn(rng))))
+    endsT = NTuple{3,Int}[]
+    for _ in 1:numdt
+        flag = true
+        distSC = 1.0
+        numit = 0
+        while flag && numit < 100
+            θ = rand(rng) * 2π
+            r = sqrt(rand(rng)) * dtParams[2] * distSC
+            z = clamp(Int(floor(2 * dtParams[3] * (rand(rng) - 0.5) + rootL[3])),
+                      1, fulldims[3])
+            x = clamp(Int(floor(r * cos(θ) + rootL[1])), 1, fulldims[1])
+            y = clamp(Int(floor(r * sin(θ) + rootL[2])), 1, fulldims[2])
+            if obstruction[x, y, z] == 0
+                push!(endsT, (x, y, z))
+                flag = false
+            end
+            distSC *= 1.01
+            numit += 1
+        end
+        flag && push!(endsT, rootL)
+    end
+    # Apical-tree endpoints (local).
+    nat = Int(atParams[1])
+    rootA = (clamp(Int(floor(rootL[1] + 2 * atParams[4] * (rand(rng) - 0.5))),
+                   1, fulldims[1]),
+             clamp(Int(floor(rootL[2] + 2 * atParams[4] * (rand(rng) - 0.5))),
+                   1, fulldims[2]),
+             clamp(Int(1 + atParams[3]), 1, fulldims[3]))
+    endsA = NTuple{3,Int}[]
+    for _ in 1:nat
+        flag = true
+        distSC = 1.0
+        numit = 0
+        while flag && numit < 100
+            θ = rand(rng) * 2π
+            r = sqrt(rand(rng)) * atParams[2] * distSC
+            z = clamp(Int(floor(2 * atParams[3] * (rand(rng) - 0.5) + rootA[3])),
+                      1, fulldims[3])
+            x = clamp(Int(floor(r * cos(θ) + rootA[1])), 1, fulldims[1])
+            y = clamp(Int(floor(r * sin(θ) + rootA[2])), 1, fulldims[2])
+            if obstruction[x, y, z] == 0
+                push!(endsA, (x, y, z))
+                flag = false
+            end
+            distSC *= 1.01
+            numit += 1
+        end
+        flag && push!(endsA, rootA)
+    end
+    all_ends = vcat(endsT, endsA)
+
+    # Endpoint sampling above draws no Dijkstra output, so running it
+    # before the search leaves the RNG stream untouched. Settling just
+    # those endpoints lets the search stop early.
+    targets = Int[lin_full[e...] for e in all_ends]
+    _dijkstra!(scratch.dij_dist, scratch.dij_path, scratch.dij_heap,
+               scratch.dij_touched, M, rootL, targets)
+    pathfrom = scratch.dij_path
+
+    all_paths = Vector{Vector{NTuple{3,Int}}}(undef, length(all_ends))
+    finepathsVal = scratch.finepathsVal
+    finepathsAD  = scratch.finepathsAD
+    fineIdxs_basal = Set{Int}()
+    fineIdxs_apic  = Set{Int}()
+    for (ei, e) in enumerate(all_ends)
+        path = get_dendrite_path(pathfrom, e, rootL)
+        all_paths[ei] = path
+        isempty(path) && continue
+        dendSz = max(0.0, 1 + dendVar * randn(rng))
+        n = length(path)
+        pw = ones(Float32, n)
+        if n > 2
+            for i in 2:(n - 1)
+                p, c, q = path[i - 1], path[i], path[i + 1]
+                d2 = abs(2c[1] - p[1] - q[1]) +
+                     abs(2c[2] - p[2] - q[2]) +
+                     abs(2c[3] - p[3] - q[3])
+                pw[i] = Float32(dendSz * (1 - (1 - 1 / sqrt(2)) * d2 / 2))
+            end
+            pw[1] = pw[2]; pw[end] = pw[end - 1]
+            pw .= max.(pw, 0f0)
+        else
+            pw .= Float32(dendSz)
+        end
+        apical = ei > numdt
+        for (i, p) in enumerate(path)
+            li = lin_full[p...]
+            if apical
+                finepathsVal[li] += pw[i]
+                finepathsAD[li]   = true
+                push!(fineIdxs_apic, li)
+            else
+                finepathsVal[li] += pw[i]
+                push!(fineIdxs_basal, li)
+            end
+        end
+    end
+
+    for li in fineIdxs_basal
+        v = finepathsVal[li]
+        v > 0 && (finepathsVal[li] = Float32(thicknessScale * dtParams[4] *
+                                             v^(1 / rallexp)))
+    end
+    for li in fineIdxs_apic
+        v = finepathsVal[li]
+        v > 0 && (finepathsVal[li] = Float32(thicknessScale * atParams[5] *
+                                             v^(1 / rallexp)))
+    end
+
+    fineIdxs3 = collect(union(fineIdxs_basal, fineIdxs_apic))
+
+    smoothed = Int32[]
+    if !all(isempty, all_paths)
+        smoothed = smooth_cell_body(all_paths, Int32.(cellBody), fulldims)
+        cb_set = Set(cellBody)
+        for li in smoothed
+            if !(Int(li) in cb_set)
+                finepathsVal[Int(li)] += 1f0
+                push!(fineIdxs3, Int(li))
+            end
+        end
+    end
+
+    # Sparse contribution: every fine-path voxel except the soma body
+    # (whose fine-path values upstream resets to zero).
+    cb_set = Set(cellBody)
+    idxs = Int[]
+    vals = Float32[]
+    ad   = Bool[]
+    for li in fineIdxs3
+        li in cb_set && continue
+        push!(idxs, li)
+        push!(vals, finepathsVal[li])
+        push!(ad, finepathsAD[li])
+    end
+
+    # Leave the fine-path buffers zeroed for the next neuron on this task.
+    for li in fineIdxs3
+        finepathsVal[li] = 0f0
+        finepathsAD[li]  = false
+    end
+    return idxs, vals, ad, smoothed
+end
 
 """
     grow_neuron_dendrites!(vol_params, dend_params, neur_soma, neur_ves,
@@ -503,6 +775,20 @@ Grow basal-tree and local-apical-tree dendrites off each soma. Returns:
 
 **Single-stage Dijkstra at fine resolution** (no coarse-then-fine
 refinement). Ports `growNeuronDendrites.m`.
+
+By default (`couple_dendrites=true`) neurons are grown serially, each
+one's obstruction map accumulating every earlier neuron's dendrites, so
+dendrites softly avoid one another — matching upstream NAOMi-Sim. Pass
+`couple_dendrites=false` to instead grow neurons in parallel across
+`Threads.nthreads()` tasks against a fixed somata/nuclei/vasculature
+obstruction map: this is several times faster, but because each neuron's
+search no longer sees the other neurons' dendrites it increases the
+fraction of voxels shared by multiple dendrites (quantified under
+[Parallel dendrite growth](@ref)).
+
+Either way each neuron draws from its own RNG, seeded deterministically
+from `rng`, so results are reproducible (and identical between the two
+modes apart from the obstruction coupling).
 """
 function grow_neuron_dendrites!(vol_params::VolumeParams,
                                 dend_params::DendriteParams,
@@ -511,7 +797,8 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
                                 neur_locs::AbstractMatrix{<:Real},
                                 gp_nuc::AbstractVector,
                                 gp_soma::AbstractVector;
-                                rng::AbstractRNG=Random.default_rng())
+                                rng::AbstractRNG=Random.default_rng(),
+                                couple_dendrites::Bool=true)
     dtParams       = collect(Float64, dend_params.dtParams)
     atParams       = collect(Float64, dend_params.atParams)
     dweight        = dend_params.dweight
@@ -529,21 +816,24 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
     thicknessScale *= vres * vres
 
     vol_depth = Int(round(vol_params.vol_depth * vres))
-    cellVolume = Float32.(neur_soma)
+    # Base obstruction map (somata + nuclei + vasculature). Every neuron's
+    # Dijkstra search sees this; it is never mutated, so the per-neuron
+    # searches are independent and run in parallel.
+    cellVolume0 = Float32.(neur_soma)
     obstruction_marker = Float32(vol_params.N_neur + Int(round(vol_params.N_den)) +
                                  vol_params.N_bg + 1)
     for k in 1:fulldims[3], j in 1:fulldims[2], i in 1:fulldims[1]
         if neur_ves[i, j, vol_depth + k]
-            cellVolume[i, j, k] = obstruction_marker
+            cellVolume0[i, j, k] = obstruction_marker
         end
     end
     for kk in 1:length(gp_nuc)
         for x in gp_nuc[kk][1]
-            cellVolume[x] = Float32(kk)
+            cellVolume0[x] = Float32(kk)
         end
     end
 
-    neur_num = UInt16.(clamp.(cellVolume, 0, typemax(UInt16)))
+    neur_num = UInt16.(clamp.(cellVolume0, 0, typemax(UInt16)))
     cellVolumeIdx = zeros(Float32, fulldims)
     cellVolumeVal = zeros(Float32, fulldims)
     cellVolumeAD  = falses(fulldims)
@@ -556,203 +846,58 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
     end
     lin_full = LinearIndices(fulldims)
 
-    # Reusable Dijkstra buffers (see `_dijkstra!`); allocated once.
-    dij_dist = fill(Inf32, fulldims)
-    dij_path = zeros(Int, fulldims)
-    dij_heap = _MinHeap()
-    dij_touched = Int[]
-
-    for j in 1:N_neur
-        rootL = (clamp(allroots[j, 1], 1, fulldims[1]),
+    # Per-neuron RNGs, seeded deterministically from `rng` so the growth
+    # below is reproducible regardless of task scheduling.
+    rngs = [MersenneTwister(s) for s in rand(rng, UInt32, N_neur)]
+    rootof(j) = (clamp(allroots[j, 1], 1, fulldims[1]),
                  clamp(allroots[j, 2], 1, fulldims[2]),
                  clamp(allroots[j, 3], 1, fulldims[3]))
-        obstruction = copy(cellVolume)
-        for x in gp_soma[j]
-            obstruction[x] = 0
-        end
-        cellBody = Int[Int(x) for x in gp_soma[j]]
 
-        M = _build_dendrite_M(fulldims, obstruction, dweight, bweight; rng=rng)
-        # Anchor: connect rootL → soma "corner" (the lowest-linear-index
-        # soma voxel) with a 3-D staircase of zero-cost edges, matching
-        # upstream `aproot` semantics in `growNeuronDendrites.m`
-        # (lines 191-204).
-        if !isempty(gp_soma[j])
-            ap_li = Int(minimum(gp_soma[j]))
-            ap = Tuple(CartesianIndices(fulldims)[ap_li])
-            # Walk x from rootL[1] → ap[1] with y=rootL[2], z=rootL[3]
-            if ap[1] > rootL[1]
-                for v in rootL[1]:ap[1]
-                    M[1, v, rootL[2], rootL[3]] = 0f0
-                end
-            elseif ap[1] < rootL[1]
-                for v in ap[1]:rootL[1]
-                    M[2, v, rootL[2], rootL[3]] = 0f0
-                end
+    if couple_dendrites
+        # Upstream-faithful serial growth: each neuron's obstruction map
+        # accumulates every earlier neuron's dendrites, so dendrites softly
+        # avoid one another. No parallelism — slower.
+        cellVolume = copy(cellVolume0)
+        scratch = _DendriteScratch(fulldims)
+        for j in 1:N_neur
+            idxs, vals, adj, smoothed =
+                _grow_one_basal!(scratch, rngs[j], j, rootof(j), gp_soma[j],
+                                 cellVolume, fulldims, lin_full, dtParams, atParams,
+                                 dweight, bweight, thicknessScale, rallexp, dendVar)
+            @inbounds for n in eachindex(idxs)
+                li = idxs[n]
+                cellVolumeIdx[li] += Float32(j)
+                cellVolumeVal[li] += vals[n]
+                cellVolumeAD[li]  |= adj[n]
+                cellVolume[li]    += Float32(j)   # feed into later obstructions
             end
-            # Walk y with x=ap[1], z=rootL[3]
-            if ap[2] > rootL[2]
-                for v in rootL[2]:ap[2]
-                    M[3, ap[1], v, rootL[3]] = 0f0
-                end
-            elseif ap[2] < rootL[2]
-                for v in ap[2]:rootL[2]
-                    M[4, ap[1], v, rootL[3]] = 0f0
-                end
+            gp_soma_aug[j][:smoothed] = smoothed
+        end
+    else
+        # Grow every neuron's dendrites in parallel against the fixed
+        # `cellVolume0` obstruction map. Each task keeps its own scratch and
+        # writes only its own slot of the result vectors.
+        res_idxs     = Vector{Vector{Int}}(undef, N_neur)
+        res_vals     = Vector{Vector{Float32}}(undef, N_neur)
+        res_ad       = Vector{Vector{Bool}}(undef, N_neur)
+        res_smoothed = Vector{Vector{Int32}}(undef, N_neur)
+        _foreach_neuron_threaded(() -> _DendriteScratch(fulldims), N_neur,
+                                 _dendrite_nchunks(fulldims)) do scratch, j
+            res_idxs[j], res_vals[j], res_ad[j], res_smoothed[j] =
+                _grow_one_basal!(scratch, rngs[j], j, rootof(j), gp_soma[j], cellVolume0,
+                                 fulldims, lin_full, dtParams, atParams,
+                                 dweight, bweight, thicknessScale, rallexp, dendVar)
+        end
+        # Reduce the per-neuron contributions into the shared volume arrays.
+        for j in 1:N_neur
+            idxs = res_idxs[j]; vals = res_vals[j]; adj = res_ad[j]
+            @inbounds for n in eachindex(idxs)
+                li = idxs[n]
+                cellVolumeIdx[li] += Float32(j)
+                cellVolumeVal[li] += vals[n]
+                cellVolumeAD[li]  |= adj[n]
             end
-            # Walk z with x=ap[1], y=ap[2]
-            if ap[3] > rootL[3]
-                for v in rootL[3]:ap[3]
-                    M[5, ap[1], ap[2], v] = 0f0
-                end
-            elseif ap[3] < rootL[3]
-                for v in ap[3]:rootL[3]
-                    M[6, ap[1], ap[2], v] = 0f0
-                end
-            end
-        end
-        # Basal-tree endpoints.
-        numdt = max(1, Int(round(dtParams[1] + dtParams[5] * randn(rng))))
-        endsT = NTuple{3,Int}[]
-        for _ in 1:numdt
-            flag = true
-            distSC = 1.0
-            numit = 0
-            while flag && numit < 100
-                θ = rand(rng) * 2π
-                r = sqrt(rand(rng)) * dtParams[2] * distSC
-                z = clamp(Int(floor(2 * dtParams[3] * (rand(rng) - 0.5) + rootL[3])),
-                          1, fulldims[3])
-                x = clamp(Int(floor(r * cos(θ) + rootL[1])), 1, fulldims[1])
-                y = clamp(Int(floor(r * sin(θ) + rootL[2])), 1, fulldims[2])
-                if obstruction[x, y, z] == 0
-                    push!(endsT, (x, y, z))
-                    flag = false
-                end
-                distSC *= 1.01
-                numit += 1
-            end
-            flag && push!(endsT, rootL)
-        end
-        # Apical-tree endpoints (local).
-        nat = Int(atParams[1])
-        rootA = (clamp(Int(floor(rootL[1] + 2 * atParams[4] * (rand(rng) - 0.5))),
-                       1, fulldims[1]),
-                 clamp(Int(floor(rootL[2] + 2 * atParams[4] * (rand(rng) - 0.5))),
-                       1, fulldims[2]),
-                 clamp(Int(1 + atParams[3]), 1, fulldims[3]))
-        endsA = NTuple{3,Int}[]
-        for _ in 1:nat
-            flag = true
-            distSC = 1.0
-            numit = 0
-            while flag && numit < 100
-                θ = rand(rng) * 2π
-                r = sqrt(rand(rng)) * atParams[2] * distSC
-                z = clamp(Int(floor(2 * atParams[3] * (rand(rng) - 0.5) + rootA[3])),
-                          1, fulldims[3])
-                x = clamp(Int(floor(r * cos(θ) + rootA[1])), 1, fulldims[1])
-                y = clamp(Int(floor(r * sin(θ) + rootA[2])), 1, fulldims[2])
-                if obstruction[x, y, z] == 0
-                    push!(endsA, (x, y, z))
-                    flag = false
-                end
-                distSC *= 1.01
-                numit += 1
-            end
-            flag && push!(endsA, rootA)
-        end
-        all_ends = vcat(endsT, endsA)
-
-        # Endpoint sampling above draws no Dijkstra output, so running it
-        # before the search leaves the RNG stream untouched. Settling just
-        # those endpoints lets the search stop early.
-        targets = Int[lin_full[e...] for e in all_ends]
-        _dijkstra!(dij_dist, dij_path, dij_heap, dij_touched, M, rootL, targets)
-        pathfrom = dij_path
-
-        all_paths = Vector{Vector{NTuple{3,Int}}}(undef, length(all_ends))
-
-        finepathsIdx = zeros(Float32, fulldims)
-        finepathsVal = zeros(Float32, fulldims)
-        finepathsAD  = falses(fulldims)
-        fineIdxs_basal = Set{Int}()
-        fineIdxs_apic  = Set{Int}()
-        for (ei, e) in enumerate(all_ends)
-            path = get_dendrite_path(pathfrom, e, rootL)
-            all_paths[ei] = path
-            isempty(path) && continue
-            dendSz = max(0.0, 1 + dendVar * randn(rng))
-            n = length(path)
-            pw = ones(Float32, n)
-            if n > 2
-                for i in 2:(n - 1)
-                    p, c, q = path[i - 1], path[i], path[i + 1]
-                    d2 = abs(2c[1] - p[1] - q[1]) +
-                         abs(2c[2] - p[2] - q[2]) +
-                         abs(2c[3] - p[3] - q[3])
-                    pw[i] = Float32(dendSz * (1 - (1 - 1 / sqrt(2)) * d2 / 2))
-                end
-                pw[1] = pw[2]; pw[end] = pw[end - 1]
-                pw .= max.(pw, 0f0)
-            else
-                pw .= Float32(dendSz)
-            end
-            apical = ei > numdt
-            for (i, p) in enumerate(path)
-                li = lin_full[p...]
-                if apical
-                    finepathsVal[li] += pw[i]
-                    finepathsAD[li]   = true
-                    push!(fineIdxs_apic, li)
-                else
-                    finepathsVal[li] += pw[i]
-                    push!(fineIdxs_basal, li)
-                end
-            end
-        end
-
-        for li in fineIdxs_basal
-            v = finepathsVal[li]
-            v > 0 && (finepathsVal[li] = Float32(thicknessScale * dtParams[4] *
-                                                 v^(1 / rallexp)))
-        end
-        for li in fineIdxs_apic
-            v = finepathsVal[li]
-            v > 0 && (finepathsVal[li] = Float32(thicknessScale * atParams[5] *
-                                                 v^(1 / rallexp)))
-        end
-
-        fineIdxs3 = collect(union(fineIdxs_basal, fineIdxs_apic))
-        for li in fineIdxs3
-            finepathsIdx[li] = Float32(j)
-        end
-
-        cellBodyVec = Int32.(cellBody)
-        if !all(isempty, all_paths)
-            smoothed = smooth_cell_body(all_paths, cellBodyVec, fulldims)
-            cb_set = Set(cellBody)
-            for li in smoothed
-                if !(Int(li) in cb_set)
-                    finepathsIdx[Int(li)] = Float32(j)
-                    finepathsVal[Int(li)] += 1f0
-                    push!(fineIdxs3, Int(li))
-                end
-            end
-            gp_soma_aug[j][:smoothed] = collect(smoothed)
-        end
-
-        for li in cellBody
-            finepathsIdx[li] = 0
-            finepathsVal[li] = 0
-            finepathsAD[li]  = false
-        end
-
-        for li in fineIdxs3
-            cellVolume[li]    += finepathsIdx[li]
-            cellVolumeIdx[li] += finepathsIdx[li]
-            cellVolumeVal[li] += finepathsVal[li]
-            cellVolumeAD[li]  |= finepathsAD[li]
+            gp_soma_aug[j][:smoothed] = res_smoothed[j]
         end
     end
 
@@ -808,6 +953,102 @@ end
 # Apical (through-volume) dendrites
 # ---------------------------------------------------------------------------
 
+# Grow one through-volume apical dendrite. Overwrites `scratch`'s big
+# arrays in place and leaves `scratch.finepathsVal` zeroed. Returns the
+# sparse contribution: `idxs` (linear voxel indices) and `vals` (fine-path
+# thickness).
+function _grow_one_apical!(scratch::_DendriteScratch, rng::AbstractRNG,
+                           j::Int, N_neur::Int, rootL::NTuple{3,Int},
+                           cellVolume0::AbstractArray{Float32,3},
+                           fulldims::NTuple{3,Int}, lin_full::LinearIndices{3},
+                           atParams::Vector{Float64},
+                           dweight::Real, bweight::Real,
+                           thicknessScale::Real, rallexp::Real, dendVar::Real)
+    obstruction = scratch.obstruction
+    copyto!(obstruction, cellVolume0)
+    M = scratch.M
+    _build_dendrite_M!(M, fulldims, obstruction, dweight, bweight; rng=rng)
+
+    nat = Int(atParams[1])
+    rootA = (clamp(Int(floor(rootL[1] + 2 * atParams[4] * (rand(rng) - 0.5))),
+                   1, fulldims[1]),
+             clamp(Int(floor(rootL[2] + 2 * atParams[4] * (rand(rng) - 0.5))),
+                   1, fulldims[2]),
+             fulldims[3])
+    endsA = NTuple{3,Int}[]
+    for _ in 1:nat
+        flag = true
+        distSC = 1.0
+        numit = 0
+        while flag && numit < 100
+            θ = rand(rng) * 2π
+            r = sqrt(rand(rng)) * atParams[2] * distSC
+            x = clamp(Int(floor(r * cos(θ) + rootA[1])), 1, fulldims[1])
+            y = clamp(Int(floor(r * sin(θ) + rootA[2])), 1, fulldims[2])
+            z = 1
+            if obstruction[x, y, z] == 0
+                push!(endsA, (x, y, z))
+                flag = false
+            end
+            distSC *= 1.01
+            numit += 1
+        end
+        flag && push!(endsA, (rootA[1], rootA[2], 1))
+    end
+
+    # Endpoint sampling draws no Dijkstra output, so running it before
+    # the search leaves the RNG stream untouched.
+    targets = Int[lin_full[e...] for e in endsA]
+    _dijkstra!(scratch.dij_dist, scratch.dij_path, scratch.dij_heap,
+               scratch.dij_touched, M, rootL, targets)
+    pathfrom = scratch.dij_path
+
+    finepathsVal = scratch.finepathsVal
+    touched = Set{Int}()
+    for e in endsA
+        path = get_dendrite_path(pathfrom, e, rootL)
+        isempty(path) && continue
+        dendSz = max(0.0, 1 + dendVar * randn(rng))
+        n = length(path)
+        pw = ones(Float32, n)
+        if n > 2
+            for i in 2:(n - 1)
+                p, c, q = path[i - 1], path[i], path[i + 1]
+                d2 = abs(2c[1] - p[1] - q[1]) +
+                     abs(2c[2] - p[2] - q[2]) +
+                     abs(2c[3] - p[3] - q[3])
+                pw[i] = Float32(dendSz * (1 - (1 - 1 / sqrt(2)) * d2 / 2))
+            end
+            pw[1] = pw[2]; pw[end] = pw[end - 1]
+            pw .= max.(pw, 0f0)
+        else
+            pw .= Float32(dendSz)
+        end
+        for (i, p) in enumerate(path)
+            li = lin_full[p...]
+            finepathsVal[li] += pw[i]
+            push!(touched, li)
+        end
+    end
+    for li in touched
+        v = finepathsVal[li]
+        v > 0 && (finepathsVal[li] = Float32(thicknessScale * atParams[5] *
+                                             v^(1 / rallexp)))
+    end
+
+    idxs = Int[]
+    vals = Float32[]
+    for li in touched
+        v = finepathsVal[li]
+        if v > 0
+            push!(idxs, li)
+            push!(vals, v)
+        end
+        finepathsVal[li] = 0f0
+    end
+    return idxs, vals
+end
+
 """
     grow_apical_dendrites!(vol_params, dend_params, neur_num, neur_num_AD_in,
                            gp_nuc, gp_soma; rng=Random.default_rng())
@@ -816,6 +1057,13 @@ end
 Add `N_den` through-volume apical dendrites rooted at random
 unobstructed surface points. Single-stage Dijkstra; ports
 `growApicalDendrites.m`.
+
+By default (`couple_dendrites=true`) the apical dendrites are grown
+serially, each one's obstruction map accumulating every earlier apical
+dendrite — matching upstream. Pass `couple_dendrites=false` to instead
+grow them in parallel across `Threads.nthreads()` tasks against a fixed
+obstruction map. Either way each draws from its own
+deterministically-seeded RNG; see [`grow_neuron_dendrites!`](@ref).
 """
 function grow_apical_dendrites!(vol_params::VolumeParams,
                                 dend_params::DendriteParams,
@@ -823,7 +1071,8 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
                                 neur_num_AD_in::AbstractArray{<:Integer,3},
                                 gp_nuc::AbstractVector,
                                 gp_soma::AbstractVector;
-                                rng::AbstractRNG=Random.default_rng())
+                                rng::AbstractRNG=Random.default_rng(),
+                                couple_dendrites::Bool=true)
     atParams       = collect(Float64, dend_params.atParams2)
     dweight        = dend_params.dweight
     bweight        = dend_params.bweight
@@ -839,10 +1088,12 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
     atParams[2:4] .*= vres
     thicknessScale *= vres * vres
 
-    cellVolume = Float32.(neur_num)
+    # Base obstruction map (somata, nuclei and the basal/local-apical
+    # dendrites already in `neur_num`).
+    cellVolume0 = Float32.(neur_num)
     for kk in 1:N_neur
         for x in gp_nuc[kk][1]
-            cellVolume[x] = Float32(kk)
+            cellVolume0[x] = Float32(kk)
         end
     end
     cellVolumeIdx = zeros(Float32, fulldims)
@@ -856,90 +1107,55 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
         tries += 1
         x = max(1, ceil(Int, fulldims[1] * rand(rng)))
         y = max(1, ceil(Int, fulldims[2] * rand(rng)))
-        if cellVolume[x, y, 1] == 0
+        if cellVolume0[x, y, 1] == 0
             push!(roots, (x, y, fulldims[3]))
         end
     end
     lin_full = LinearIndices(fulldims)
+    n_roots = length(roots)
 
-    # Reusable Dijkstra buffers (see `_dijkstra!`); allocated once.
-    dij_dist = fill(Inf32, fulldims)
-    dij_path = zeros(Int, fulldims)
-    dij_heap = _MinHeap()
-    dij_touched = Int[]
+    # Per-root RNGs, seeded deterministically from `rng`.
+    rngs = [MersenneTwister(s) for s in rand(rng, UInt32, n_roots)]
 
-    for j in 1:length(roots)
-        rootL = roots[j]
-        obstruction = copy(cellVolume)
-        M = _build_dendrite_M(fulldims, obstruction, dweight, bweight; rng=rng)
-
-        nat = Int(atParams[1])
-        rootA = (clamp(Int(floor(rootL[1] + 2 * atParams[4] * (rand(rng) - 0.5))),
-                       1, fulldims[1]),
-                 clamp(Int(floor(rootL[2] + 2 * atParams[4] * (rand(rng) - 0.5))),
-                       1, fulldims[2]),
-                 fulldims[3])
-        endsA = NTuple{3,Int}[]
-        for _ in 1:nat
-            flag = true
-            distSC = 1.0
-            numit = 0
-            while flag && numit < 100
-                θ = rand(rng) * 2π
-                r = sqrt(rand(rng)) * atParams[2] * distSC
-                x = clamp(Int(floor(r * cos(θ) + rootA[1])), 1, fulldims[1])
-                y = clamp(Int(floor(r * sin(θ) + rootA[2])), 1, fulldims[2])
-                z = 1
-                if obstruction[x, y, z] == 0
-                    push!(endsA, (x, y, z))
-                    flag = false
-                end
-                distSC *= 1.01
-                numit += 1
-            end
-            flag && push!(endsA, (rootA[1], rootA[2], 1))
-        end
-
-        # Endpoint sampling draws no Dijkstra output, so running it before
-        # the search leaves the RNG stream untouched.
-        targets = Int[lin_full[e...] for e in endsA]
-        _dijkstra!(dij_dist, dij_path, dij_heap, dij_touched, M, rootL, targets)
-        pathfrom = dij_path
-
-        finepathsVal = zeros(Float32, fulldims)
-        for e in endsA
-            path = get_dendrite_path(pathfrom, e, rootL)
-            isempty(path) && continue
-            dendSz = max(0.0, 1 + dendVar * randn(rng))
-            n = length(path)
-            pw = ones(Float32, n)
-            if n > 2
-                for i in 2:(n - 1)
-                    p, c, q = path[i - 1], path[i], path[i + 1]
-                    d2 = abs(2c[1] - p[1] - q[1]) +
-                         abs(2c[2] - p[2] - q[2]) +
-                         abs(2c[3] - p[3] - q[3])
-                    pw[i] = Float32(dendSz * (1 - (1 - 1 / sqrt(2)) * d2 / 2))
-                end
-                pw[1] = pw[2]; pw[end] = pw[end - 1]
-                pw .= max.(pw, 0f0)
-            else
-                pw .= Float32(dendSz)
-            end
-            for (i, p) in enumerate(path)
-                li = lin_full[p...]
-                finepathsVal[li] += pw[i]
+    if couple_dendrites
+        # Upstream-faithful serial growth: each apical dendrite's
+        # obstruction map accumulates every earlier one. No parallelism.
+        cellVolume = copy(cellVolume0)
+        scratch = _DendriteScratch(fulldims)
+        for j in 1:n_roots
+            idxs, vals = _grow_one_apical!(scratch, rngs[j], j, N_neur, roots[j],
+                                           cellVolume, fulldims, lin_full, atParams,
+                                           dweight, bweight, thicknessScale,
+                                           rallexp, dendVar)
+            @inbounds for n in eachindex(idxs)
+                li = idxs[n]
+                cellVolumeIdx[li] += Float32(j + N_neur)
+                cellVolumeVal[li] += vals[n]
+                cellVolume[li]    += Float32(j + N_neur)
             end
         end
-        for li in eachindex(finepathsVal)
-            v = finepathsVal[li]
-            v > 0 && (finepathsVal[li] = Float32(thicknessScale * atParams[5] *
-                                                 v^(1 / rallexp)))
+    else
+        # Grow every apical dendrite in parallel against the fixed
+        # `cellVolume0`; each task keeps its own scratch and writes only
+        # its own slot of the result vectors.
+        res_idxs = Vector{Vector{Int}}(undef, n_roots)
+        res_vals = Vector{Vector{Float32}}(undef, n_roots)
+        _foreach_neuron_threaded(() -> _DendriteScratch(fulldims), n_roots,
+                                 _dendrite_nchunks(fulldims)) do scratch, j
+            res_idxs[j], res_vals[j] =
+                _grow_one_apical!(scratch, rngs[j], j, N_neur, roots[j], cellVolume0,
+                                  fulldims, lin_full, atParams,
+                                  dweight, bweight, thicknessScale, rallexp, dendVar)
         end
-        finepathsIdx = Float32(j + N_neur) .* Float32.(finepathsVal .> 0)
-        cellVolume    .+= finepathsIdx
-        cellVolumeIdx .+= finepathsIdx
-        cellVolumeVal .+= finepathsVal
+        # Reduce the per-root contributions into the shared volume arrays.
+        for j in 1:n_roots
+            idxs = res_idxs[j]; vals = res_vals[j]
+            @inbounds for n in eachindex(idxs)
+                li = idxs[n]
+                cellVolumeIdx[li] += Float32(j + N_neur)
+                cellVolumeVal[li] += vals[n]
+            end
+        end
     end
 
     thick = UInt16.(min.(ceil.(cellVolumeVal), Float32(typemax(UInt16))))
