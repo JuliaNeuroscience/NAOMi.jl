@@ -103,6 +103,10 @@ bg_act   = traces.bg   === nothing ?
 neur_act = (soma=soma_act, dend=dend_act, bg=bg_act)
 
 # --- 4. Scanning ---------------------------------------------------------
+# Volume generation leaves a large amount of now-dead scratch on the heap
+# (per-thread Dijkstra buffers). Collect it before scanning allocates the
+# movie arrays, so the two stages' peaks do not stack up.
+GC.gc()
 println("Scanning volume ($(nt) frames)...")
 t0 = time()
 mov, mov_clean = scan_volume(neur_vol, psf, neur_act, scan_params;
