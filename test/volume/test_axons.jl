@@ -41,9 +41,13 @@ end
     @test length(gp_bgvals) > 0
     @test length(gp_bgvals) <= s.vol.N_bg
     @test ap_new.N_proc == length(gp_bgvals)
-    # Each process should have ≥ minlength voxels.
+    # Each process is non-empty with matching, positive values. A trunk
+    # is grown to >= minlength in *padded* coordinates and then clipped
+    # to the volume, so an axon lying mostly in the pad can contribute
+    # only a few in-volume voxels — the per-process count is not bounded
+    # below by minlength.
     for e in gp_bgvals
-        @test length(e.loc) >= ap.minlength
+        @test length(e.loc) >= 1
         @test length(e.val) == length(e.loc)
         @test all(>(0), e.val)
     end

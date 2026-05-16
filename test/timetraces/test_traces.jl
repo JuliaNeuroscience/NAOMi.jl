@@ -97,30 +97,38 @@ end
     # should co-fire more than distant pairs. Sample-level binary spikes
     # are too sparse for direct correlation; bin into 50-sample windows
     # (~0.5 s) to capture burst-coincidence.
-    rng = MersenneTwister(11)
+    #
+    # The per-run signal is weak (correlations ~0.01–0.05) and a single
+    # fixed-seed draw can flip near/far — and `MersenneTwister` yields
+    # different draws across Julia versions. Pool the correlations over
+    # several seeds so the test reflects the model property, not one
+    # realisation.
     K = 30
     n_locs = reshape(collect(1.0:K), K, 1)
     so = SpikeOptions(K = K, nt = 20000, dt = 1 / 100, rate = 2e-1,
                        burst_mean = 20.0, N_bg = 0)
-    res = gen_correlated_spike_trains(rng, so; n_locs = n_locs)
-    bin = 50
-    nb = size(res.soma, 2) ÷ bin
-    Sb = zeros(Float64, K, nb)
-    for j in 1:nb
-        Sb[:, j] = sum(res.soma[:, (j - 1) * bin + 1:j * bin]; dims = 2)
-    end
-    Sd = Sb .- mean(Sb; dims = 2)
-    norms = sqrt.(sum(Sd .^ 2; dims = 2))
     near_corr = Float64[]
     far_corr  = Float64[]
-    for i in 1:K, j in (i + 1):K
-        n = norms[i] * norms[j]
-        n == 0 && continue
-        c = (Sd[i, :]' * Sd[j, :]) / n
-        if abs(i - j) ≤ 2
-            push!(near_corr, c)
-        elseif abs(i - j) ≥ 15
-            push!(far_corr, c)
+    for seed in 1:5
+        res = gen_correlated_spike_trains(MersenneTwister(seed), so;
+                                          n_locs = n_locs)
+        bin = 50
+        nb = size(res.soma, 2) ÷ bin
+        Sb = zeros(Float64, K, nb)
+        for j in 1:nb
+            Sb[:, j] = sum(res.soma[:, (j - 1) * bin + 1:j * bin]; dims = 2)
+        end
+        Sd = Sb .- mean(Sb; dims = 2)
+        norms = sqrt.(sum(Sd .^ 2; dims = 2))
+        for i in 1:K, j in (i + 1):K
+            n = norms[i] * norms[j]
+            n == 0 && continue
+            c = (Sd[i, :]' * Sd[j, :]) / n
+            if abs(i - j) ≤ 2
+                push!(near_corr, c)
+            elseif abs(i - j) ≥ 15
+                push!(far_corr, c)
+            end
         end
     end
     @test !isempty(near_corr) && !isempty(far_corr)
