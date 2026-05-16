@@ -170,7 +170,7 @@ function calcium_dynamics(S::AbstractMatrix{<:Real}, cp::CalciumParams;
         end
         h = make_doub_exp_kernel(cp.t_on, cp.t_off, cp.ca_amp, dt)
         CB = similar(C)
-        @inbounds for k in 1:K
+        for k in 1:K
             CB[k, :] .= _conv_full_decimate(view(C, k, :) .- ca_rest, h,
                                             over_samp, nt_in) .+ ca_rest
         end
@@ -235,7 +235,7 @@ function _conv_full_decimate(signal::AbstractVector{<:Real},
     Lf = Ls + Lk - 1
     out_len = min(nt_in, cld(Lf, over_samp))
     out = zeros(Float64, out_len)
-    @inbounds for j in 1:out_len
+    for j in 1:out_len
         n = (j - 1) * over_samp + 1   # 1-based index in the full conv
         s = 0.0
         kmin = max(1, n - Ls + 1)

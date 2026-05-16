@@ -44,7 +44,7 @@ function generate_bg_dendrites(vol_params::VolumeParams,
     volsize = (H, W, D)
 
     bg_pix = falses(volsize)
-    @inbounds for li in eachindex(neur_num)
+    for li in eachindex(neur_num)
         bg_pix[li] = neur_num[li] == 0
     end
     for kk in 1:vol_params.N_neur
@@ -76,7 +76,7 @@ function generate_bg_dendrites(vol_params::VolumeParams,
     end
 
     M = rand(rng, Float32, volsize)
-    @inbounds for li in eachindex(M)
+    for li in eachindex(M)
         if !bg_pix[li]
             M[li] = floatmax(Float32)
         end
@@ -220,7 +220,7 @@ function generate_bg_dendrites(vol_params::VolumeParams,
     _, pathnum = dilate_dendrite_paths_all(numvol, idxvol, .!bg_pix; rng=rng)
     Ncomps = vol_params.N_neur + Int(round(vol_params.N_den))
     pathnum_offset = copy(pathnum)
-    @inbounds for li in eachindex(pathnum_offset)
+    for li in eachindex(pathnum_offset)
         if pathnum_offset[li] > 0
             pathnum_offset[li] += Ncomps
         end

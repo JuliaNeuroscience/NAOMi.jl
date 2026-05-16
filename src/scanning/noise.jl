@@ -33,7 +33,7 @@ function poisson_gauss_noise(clean_in::AbstractMatrix{<:Real},
                              rng::AbstractRNG=Random.default_rng())
     H, W = size(clean_in)
     out  = Matrix{Float32}(undef, H, W)
-    @inbounds for j in 1:W, i in 1:H
+    for j in 1:W, i in 1:H
         lam = max(0.0f0, Float32(clean_in[i, j]) + Float32(noise_params.darkcount))
         cnt = Float32(rand(rng, Poisson(lam)))
         m = cnt * Float32(noise_params.mu)
@@ -81,8 +81,8 @@ function pixel_bleed(frame::AbstractMatrix{<:Real}, p::Real, b_max::Real;
     # shifted down, columns 2..end are x_bleed columns 1..end-1.
     prev_xb = Matrix{Float32}(undef, H, W)
     prev_fr = Matrix{Float32}(undef, H, W)
-    @inbounds prev_xb[1, 1] = 0f0
-    @inbounds prev_fr[1, 1] = 0f0
+    prev_xb[1, 1] = 0f0
+    prev_fr[1, 1] = 0f0
     @inbounds for i in 2:H
         prev_xb[i, 1] = x_bleed[i - 1, end]
         prev_fr[i, 1] = fr[i - 1, end]
@@ -109,7 +109,7 @@ function apply_noise_model(clean_mov::AbstractArray{<:Real,3},
                            rng::AbstractRNG=Random.default_rng())
     H, W, T = size(clean_mov)
     mov = Array{Float32, 3}(undef, H, W, T)
-    @inbounds for k in 1:T
+    for k in 1:T
         noisy = poisson_gauss_noise(@view(clean_mov[:, :, k]), noise_params; rng=rng)
         mov[:, :, k] .= pixel_bleed(noisy, noise_params.bleedp,
                                     noise_params.bleedw; rng=rng)

@@ -58,7 +58,7 @@ function generate_burst_spike_times(rng::AbstractRNG, so::SpikeOptions,
     ref_time = 5.0                       # refractory delay in samples (upstream)
     burst_dist = burst_mean > 0 ? Poisson(burst_mean) : nothing
     S = zeros(Int, K, nt)
-    @inbounds for k in 1:K
+    for k in 1:K
         inv_rate = 1.0 / rates[k]        # average inter-spike interval
         T_tot = 0.0
         while T_tot < nt

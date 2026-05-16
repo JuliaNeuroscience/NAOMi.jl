@@ -25,7 +25,7 @@ function psf_fft(vol_sz::NTuple{3,<:Integer}, psf::AbstractArray{<:Real,3};
         N3 = size(psf, 3)
         N_slce = cld(N3, z_sub)
         psf2 = zeros(Float32, size(psf, 1), size(psf, 2), N_slce)
-        @inbounds for k in 1:N_slce
+        for k in 1:N_slce
             base = (k - 1) * z_sub + 1
             for off in 0:(z_sub - 1)
                 slc = base + off
@@ -36,14 +36,14 @@ function psf_fft(vol_sz::NTuple{3,<:Integer}, psf::AbstractArray{<:Real,3};
         end
         sz = (vol_sz[1] + size(psf2, 1) - 1, vol_sz[2] + size(psf2, 2) - 1)
         padded = zeros(ComplexF32, sz[1], sz[2], size(psf2, 3))
-        @inbounds for k in axes(psf2, 3)
+        for k in axes(psf2, 3)
             padded[1:size(psf2, 1), 1:size(psf2, 2), k] .= ComplexF32.(@view psf2[:, :, k])
         end
         return fft(fft(padded, 1), 2)
     else
         sz = (vol_sz[1] + size(psf, 1) - 1, vol_sz[2] + size(psf, 2) - 1)
         padded = zeros(ComplexF32, sz[1], sz[2], size(psf, 3))
-        @inbounds for k in axes(psf, 3)
+        for k in axes(psf, 3)
             padded[1:size(psf, 1), 1:size(psf, 2), k] .= ComplexF32.(@view psf[:, :, k])
         end
         return fft(fft(padded, 1), 2)
@@ -69,7 +69,7 @@ function single_scan(neur_vol::AbstractArray{<:Real,3},
     if z_sub > 1
         N_slce = cld(N3, z_sub)
         nv2 = zeros(Float32, size(neur_vol, 1), size(neur_vol, 2), N_slce)
-        @inbounds for k in 1:N_slce
+        for k in 1:N_slce
             base = (k - 1) * z_sub + 1
             for off in 0:(z_sub - 1)
                 slc = base + off
@@ -80,7 +80,7 @@ function single_scan(neur_vol::AbstractArray{<:Real,3},
         end
         if !freq_opt
             psf2 = zeros(Float32, size(psf_or_freq, 1), size(psf_or_freq, 2), N_slce)
-            @inbounds for k in 1:N_slce
+            for k in 1:N_slce
                 base = (k - 1) * z_sub + 1
                 for off in 0:(z_sub - 1)
                     slc = base + off
@@ -103,7 +103,7 @@ function single_scan(neur_vol::AbstractArray{<:Real,3},
         # Convolve each axial slice in frequency, sum along z.
         acc = zeros(ComplexF32, sz[1], sz[2])
         nz = min(size(neur_vol_eff, 3), size(psf_or_freq, 3))
-        @inbounds for k in 1:nz
+        for k in 1:nz
             slab = zeros(ComplexF32, sz[1], sz[2])
             slab[1:size(neur_vol_eff, 1), 1:size(neur_vol_eff, 2)] .=
                 ComplexF32.(@view neur_vol_eff[:, :, k])
@@ -119,7 +119,7 @@ function single_scan(neur_vol::AbstractArray{<:Real,3},
         img = zeros(Float32, size(neur_vol_eff, 1), size(neur_vol_eff, 2))
         psf3 = freq_opt ? nothing : psf2
         nz = min(size(neur_vol_eff, 3), size(psf3, 3))
-        @inbounds for k in 1:nz
+        for k in 1:nz
             img .+= _conv2_same(@view(neur_vol_eff[:, :, k]),
                                 @view(psf3[:, :, k]))
         end
@@ -135,7 +135,7 @@ function _conv2_same(A::AbstractMatrix, B::AbstractMatrix)
     pad_h = cld(h - 1, 2)
     pad_w = cld(w - 1, 2)
     out = zeros(Float32, H, W)
-    @inbounds for j in 1:W, i in 1:H
+    for j in 1:W, i in 1:H
         s = 0.0f0
         for jj in 1:w, ii in 1:h
             ai = i + ii - 1 - pad_h
@@ -282,7 +282,7 @@ function scan_volume_frame(scan_vol::ScanVolume,
         Float32[]
 
     TMPvol = zeros(Float32, H, W, D)
-    @inbounds for ll in 1:K_soma
+    for ll in 1:K_soma
         a = soma_act[ll]
         a > cutoff || continue
         isempty(scan_vol.soma_loc[ll]) && continue
@@ -291,7 +291,7 @@ function scan_volume_frame(scan_vol::ScanVolume,
         end
     end
     if scan_vol.nuc_label
-        @inbounds for ll in 1:length(scan_vol.nuc_loc)
+        for ll in 1:length(scan_vol.nuc_loc)
             a = nuc_act[ll]
             a > cutoff || continue
             for (i, li) in enumerate(scan_vol.nuc_loc[ll])
@@ -299,7 +299,7 @@ function scan_volume_frame(scan_vol::ScanVolume,
             end
         end
     end
-    @inbounds for ll in 1:K_soma
+    for ll in 1:K_soma
         a = dend_act[ll]
         a > cutoff || continue
         isempty(scan_vol.dend_loc[ll]) && continue
@@ -307,7 +307,7 @@ function scan_volume_frame(scan_vol::ScanVolume,
             TMPvol[Int(li)] = scan_vol.dend_val[ll][i] * Float32(a)
         end
     end
-    @inbounds for ll in 1:K_axon
+    for ll in 1:K_axon
         a = bg_act[ll]
         a > cutoff || continue
         isempty(scan_vol.axon_loc[ll]) && continue

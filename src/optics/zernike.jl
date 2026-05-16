@@ -31,7 +31,7 @@ function zernike_polynomial(j::Integer, x::AbstractArray, y::AbstractArray)
     size(x) == size(y) || throw(ArgumentError("x and y must have matching shapes"))
     n, m = _zidx(j)
     out = similar(x, Float64)
-    @inbounds for i in eachindex(x)
+    for i in eachindex(x)
         xi, yi = x[i], y[i]
         r = sqrt(xi^2 + yi^2)
         if m == 0

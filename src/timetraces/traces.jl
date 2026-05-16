@@ -289,7 +289,7 @@ function _buffer_and_scale(S::AbstractMatrix, l_buff::Integer, dyn_type::Symbol,
                            mu::Real, sig::Real, rng::AbstractRNG)
     if dyn_type === :AR1 || dyn_type === :AR2
         out = Float64.(S)
-        @inbounds for i in eachindex(out)
+        for i in eachindex(out)
             if out[i] == 1
                 out[i] = (1 + rand(rng)) * exp(mu + sig * randn(rng))
             end
@@ -368,7 +368,7 @@ function _conv_same(S::AbstractMatrix, h::AbstractVector)
     Lh = length(h)
     out = zeros(Float64, K, T)
     offset = Lh ÷ 2
-    @inbounds for k in 1:K, t in 1:T
+    for k in 1:K, t in 1:T
         s = 0.0
         for j in 1:Lh
             idx = t + offset - j + 1
@@ -385,7 +385,7 @@ function _resample_to_user(X::AbstractMatrix, dt_user::Real, nt_user::Integer)
         return Float64.(X[:, 1:min(T, nt_user)])
     end
     out = zeros(Float64, K, nt_user)
-    @inbounds for j in 1:nt_user
+    for j in 1:nt_user
         x = (j - 1) * dt_user * 100 + 1
         x = clamp(x, 1.0, Float64(T))
         i0 = floor(Int, x); i1 = min(i0 + 1, T)

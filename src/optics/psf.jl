@@ -34,7 +34,7 @@ function gaussian_psf(psflen::Real, lambda::Real,
     z = ((1:Nz) .- round(Int, Nz / 2)) .* samp[3]
     ct, st = cosd(theta), sind(theta)
     psf = Array{Float64}(undef, Nx, Ny, Nz)
-    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+    for k in 1:Nz, j in 1:Ny, i in 1:Nx
         xv = x[i]; yv = y[j]; zv = z[k]
         xr =  ct * xv - st * zv
         zrot = st * xv + ct * zv
@@ -77,7 +77,7 @@ function gaussian_psf_na(na::Real, lambda::Real,
     ct, st = cosd(theta), sind(theta)
     intensity = Array{Float64}(undef, Nx, Ny, Nz)
     psf = Array{Float64}(undef, Nx, Ny, Nz)
-    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+    for k in 1:Nz, j in 1:Ny, i in 1:Nx
         xv = x[i]; yv = y[j]; zv = z[k]
         xr =  ct * xv - st * zv
         zrot = st * xv + ct * zv

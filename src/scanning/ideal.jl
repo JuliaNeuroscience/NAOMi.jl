@@ -54,7 +54,7 @@ function calculate_ideal_comps(neur_vol::NeuralVolume,
 
     g_idxs = falses(K_soma)
     K_min  = min(K_soma, length(n1), K_axon)
-    @inbounds for k in 1:K_min
+    for k in 1:K_min
         g_idxs[k] = (n0[k] + n1[k] + n2[k]) > 0
     end
     keep = findall(g_idxs)
@@ -130,7 +130,7 @@ function comps2ideals(comps::AbstractArray{<:Real,3},
     # Ratio image, with division-by-zero giving Inf/NaN we treat as zero.
     for c in 1:K
         ratio = Vector{Float32}(undef, H * W)
-        @inbounds for j in 1:W, i in 1:H
+        for j in 1:W, i in 1:H
             b = Float32(baseim[i, j])
             v = b == 0 ? 0f0 : Float32(comps[i, j, c]) / b
             ratio[(j - 1) * H + i] = isfinite(v) ? v : 0f0
@@ -148,7 +148,7 @@ function comps2ideals(comps::AbstractArray{<:Real,3},
         isempty(sizes) && continue
         biggest = argmax(sizes)
         sizes[biggest] >= min_num_el || continue
-        @inbounds for j in 1:W, i in 1:H
+        for j in 1:W, i in 1:H
             if comp_id[i, j] == biggest
                 ideal[i, j, c] = Float32(comps[i, j, c])
             end
@@ -165,7 +165,7 @@ function _label_connected(mask::AbstractMatrix{Bool})
     sizes = Int[]
     next = 0
     stack = Tuple{Int,Int}[]
-    @inbounds for j in 1:W, i in 1:H
+    for j in 1:W, i in 1:H
         (mask[i, j] && labels[i, j] == 0) || continue
         next += 1
         push!(sizes, 0)
@@ -225,7 +225,7 @@ function times_from_profs(mov::AbstractArray{<:Real,3},
         med = Array{Float32}(undef, H, W)
         # Per-pixel median over time.
         buf = Vector{Float32}(undef, T)
-        @inbounds for j in 1:W, i in 1:H
+        for j in 1:W, i in 1:H
             for t in 1:T
                 buf[t] = Float32(mov[i, j, t])
             end
@@ -240,18 +240,18 @@ function times_from_profs(mov::AbstractArray{<:Real,3},
 
     A = zeros(Float32, H * W, C + B)
     for c in 1:C
-        @inbounds for j in 1:W, i in 1:H
+        for j in 1:W, i in 1:H
             A[(j - 1) * H + i, c] = Float32(neur_prof[i, j, c])
         end
     end
     for b in 1:B
-        @inbounds for j in 1:W, i in 1:H
+        for j in 1:W, i in 1:H
             A[(j - 1) * H + i, C + b] = Float32(bg[i, j, b])
         end
     end
 
     Y = Matrix{Float32}(undef, H * W, T)
-    @inbounds for t in 1:T, j in 1:W, i in 1:H
+    for t in 1:T, j in 1:W, i in 1:H
         Y[(j - 1) * H + i, t] = Float32(mov[i, j, t])
     end
 

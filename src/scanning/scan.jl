@@ -33,7 +33,7 @@ function img_sub_row_shift(img_in::AbstractMatrix{<:Real},
     y_off_v = Float64.(y_off) .- buf_sz
     x_off2 = x_off_v .+ (0:(nrows - 1))
 
-    @inbounds for k in 1:nrows
+    for k in 1:nrows
         x2 = x_off2[k]
         if mod(x2, 1) > 0
             lo, hi = floor(Int, x2), ceil(Int, x2)
@@ -56,7 +56,7 @@ function img_sub_row_shift(img_in::AbstractMatrix{<:Real},
     padded[:, (offset + 1):(offset + W)] .= img_tmp
 
     img_out = zeros(Float32, H, W)
-    @inbounds for k in 1:H
+    for k in 1:H
         ycol = y_off_v[min(k, end)]
         lo_y, hi_y = floor(Int, ycol), ceil(Int, ycol)
         frac = Float32(mod(ycol, 1))
@@ -192,7 +192,7 @@ function scan_volume(neur_vol::NeuralVolume,
 
         # Build TMPvol with this frame's activity.
         TMPvol = zeros(Float32, H, W, D)
-        @inbounds for ll in 1:K_soma
+        for ll in 1:K_soma
             a = soma_act[ll, kk]
             a > cutoff || continue
             isempty(sv.soma_loc[ll]) && continue
@@ -200,7 +200,7 @@ function scan_volume(neur_vol::NeuralVolume,
                 TMPvol[Int(li)] = sv.soma_val[ll][i] * a
             end
         end
-        @inbounds for ll in 1:K_soma
+        for ll in 1:K_soma
             a = dend_act[ll, kk]
             a > cutoff || continue
             isempty(sv.dend_loc[ll]) && continue
@@ -208,7 +208,7 @@ function scan_volume(neur_vol::NeuralVolume,
                 TMPvol[Int(li)] = sv.dend_val[ll][i] * a
             end
         end
-        @inbounds for ll in 1:K_axon
+        for ll in 1:K_axon
             a = bg_act[ll, kk]
             a > cutoff || continue
             ll <= length(sv.axon_loc) || continue
@@ -240,7 +240,7 @@ function scan_volume(neur_vol::NeuralVolume,
             binned = zeros(Float32, H2, W2)
             for j in 1:W2, i in 1:H2
                 s = 0f0
-                @inbounds for jj in 1:sf, ii in 1:sf
+                for jj in 1:sf, ii in 1:sf
                     s += clean_img[(i - 1) * sf + ii, (j - 1) * sf + jj]
                 end
                 binned[i, j] = s

@@ -148,7 +148,7 @@ function simulate_neural_volume(vol_params::VolumeParams,
 
     # Brain-slab vessel mask (without the above-volume slab).
     neur_ves_brain = falses(H, W, D)
-    @inbounds for k in 1:D, j in 1:W, i in 1:H
+    for k in 1:D, j in 1:W, i in 1:H
         neur_ves_brain[i, j, k] = neur_ves_full[i, j, vol_depth_vox + k]
     end
 

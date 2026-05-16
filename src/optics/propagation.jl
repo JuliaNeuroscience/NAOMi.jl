@@ -162,7 +162,7 @@ function group_z_project(images::AbstractArray{<:Any,3}, groupsize::Integer;
     Tout = T <: Integer ? Float64 : float(T)
     out = Array{Tout}(undef, Nx, Ny, ng)
 
-    @inbounds for g in 1:ng_full
+    for g in 1:ng_full
         lo = (g - 1) * groupsize + 1
         hi = g * groupsize
         for j in 1:Ny, i in 1:Nx
@@ -171,7 +171,7 @@ function group_z_project(images::AbstractArray{<:Any,3}, groupsize::Integer;
     end
     if rest > 0
         lo = Nz - rest + 1
-        @inbounds for j in 1:Ny, i in 1:Nx
+        for j in 1:Ny, i in 1:Nx
             out[i, j, end] = op(@view(images[i, j, lo:Nz]))
         end
     end
@@ -358,7 +358,7 @@ function _disk_kernel(radius::Real)
     r = max(0, ceil(Int, radius))
     sz = 2r + 1
     K = zeros(Float64, sz, sz)
-    @inbounds for j in 1:sz, i in 1:sz
+    for j in 1:sz, i in 1:sz
         if (i - r - 1)^2 + (j - r - 1)^2 <= radius^2
             K[i, j] = 1.0
         end
@@ -374,7 +374,7 @@ function _conv2_same(A::AbstractMatrix{<:Real}, K::AbstractMatrix{<:Real})
     kx, ky = size(K)
     cx, cy = (kx + 1) ÷ 2, (ky + 1) ÷ 2
     out = zeros(Float64, Nx, Ny)
-    @inbounds for j in 1:Ny, i in 1:Nx
+    for j in 1:Ny, i in 1:Nx
         s = 0.0
         for jk in 1:ky, ik in 1:kx
             ia = i + ik - cx
