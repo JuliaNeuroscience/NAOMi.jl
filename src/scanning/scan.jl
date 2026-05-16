@@ -87,6 +87,10 @@ frame motion history (`3 × nt`).
 
 Ports `scan_volume.m` minus the temporal-focusing
 (`psfT`/`psfB`/`colmask`) and TIFF-streaming output paths.
+
+The per-frame motion trajectory is drawn serially (it is a random walk),
+then the frames are scanned in parallel across `Threads.nthreads()`
+tasks, each with its own noise RNG seeded deterministically from `rng`.
 """
 function scan_volume(neur_vol::NeuralVolume,
                      psf::AbstractArray{<:Real,3},
@@ -157,6 +161,14 @@ function scan_volume(neur_vol::NeuralVolume,
     # Per-cell soma/dend/axon voxel/value vectors (already split in sv).
     cutoff = 1e-2
 
+    # --- Motion trajectory (serial) --------------------------------------
+    # The slab offset and per-row shear form a random walk over frames, so
+    # they must be drawn in order. This is an RNG-only pass costing
+    # microseconds per frame; doing it up front lets the expensive scan of
+    # each frame run independently in parallel below.
+    z_locs    = Vector{Int}(undef, nt)
+    x_pos_arr = Vector{Int}(undef, nt)
+    y_off_arr = Vector{Vector{Int}}(undef, nt)
     for kk in 1:nt
         if rand(rng) > p_jump
             x_loc = clamp(x_loc + rand(rng, d_stps2), 1, 2 * scan_buff + 1)
@@ -190,85 +202,115 @@ function scan_volume(neur_vol::NeuralVolume,
         end
         y_off = clamp.(y_pos .+ y_shr .+ rand(rng, d_stps, H), 1, 2 * scan_buff + 1)
 
-        # Build TMPvol with this frame's activity.
-        TMPvol = zeros(Float32, H, W, D)
-        for ll in 1:K_soma
-            a = soma_act[ll, kk]
-            a > cutoff || continue
-            isempty(sv.soma_loc[ll]) && continue
-            for (i, li) in enumerate(sv.soma_loc[ll])
-                TMPvol[Int(li)] = sv.soma_val[ll][i] * a
-            end
-        end
-        for ll in 1:K_soma
-            a = dend_act[ll, kk]
-            a > cutoff || continue
-            isempty(sv.dend_loc[ll]) && continue
-            for (i, li) in enumerate(sv.dend_loc[ll])
-                TMPvol[Int(li)] = sv.dend_val[ll][i] * a
-            end
-        end
-        for ll in 1:K_axon
-            a = bg_act[ll, kk]
-            a > cutoff || continue
-            ll <= length(sv.axon_loc) || continue
-            isempty(sv.axon_loc[ll]) && continue
-            for (i, li) in enumerate(sv.axon_loc[ll])
-                TMPvol[Int(li)] += sv.axon_val[ll][i] * a
-            end
-        end
-
-        # Scan the active slab.
-        z_hi = min(z_loc + Np3 - 1, D)
-        sub_vol = @view TMPvol[:, :, z_loc:z_hi]
-        clean_img = (sigscale / (2 * sfrac^2)) .*
-                    single_scan(sub_vol, (Np1, Np2, Np3), sv.freq_psf;
-                                z_sub=scan_params.scan_avg, freq_opt=true)
-
-        # Per-row shift to model motion + buffer crop.
-        if mot_opt && size(clean_img, 1) > 2 * scan_buff && size(clean_img, 2) > 2 * scan_buff
-            clean_img = img_sub_row_shift(clean_img, scan_buff, x_pos, round.(Int, y_off))
-        else
-            clean_img = clean_img[(scan_buff + 1):(size(clean_img, 1) - scan_buff),
-                                   (scan_buff + 1):(size(clean_img, 2) - scan_buff)]
-        end
-
-        if sfrac > 1 && floor(sfrac) == sfrac
-            sf = Int(sfrac)
-            H2 = size(clean_img, 1) ÷ sf
-            W2 = size(clean_img, 2) ÷ sf
-            binned = zeros(Float32, H2, W2)
-            for j in 1:W2, i in 1:H2
-                s = 0f0
-                for jj in 1:sf, ii in 1:sf
-                    s += clean_img[(i - 1) * sf + ii, (j - 1) * sf + jj]
-                end
-                binned[i, j] = s
-            end
-            clean_img = binned
-        end
-
-        if return_clean
-            # Trim to expected output size.
-            h_trim = min(size(clean_img, 1), H_out)
-            w_trim = min(size(clean_img, 2), W_out)
-            mov_clean[1:h_trim, 1:w_trim, kk] .= @view clean_img[1:h_trim, 1:w_trim]
-        end
-
-        # Noise model.
-        samp_img = if !isnothing(noise_params)
-            np = noise_params.sigscale != noise_params.sigscale ? noise_params :
-                noise_params  # no-op; sigscale already encoded above
-            noisy = poisson_gauss_noise(clean_img, noise_params; rng=rng)
-            pixel_bleed(noisy, noise_params.bleedp, noise_params.bleedw; rng=rng)
-        else
-            clean_img
-        end
-
-        h_trim = min(size(samp_img, 1), H_out)
-        w_trim = min(size(samp_img, 2), W_out)
-        mov[1:h_trim, 1:w_trim, kk] .= @view samp_img[1:h_trim, 1:w_trim]
+        z_locs[kk]    = z_loc
+        x_pos_arr[kk] = x_pos
+        y_off_arr[kk] = round.(Int, y_off)
     end
+
+    # Per-frame RNGs for the noise model, seeded deterministically from
+    # `rng` so the threaded scan below is reproducible.
+    noise_rngs = [MersenneTwister(s) for s in rand(rng, UInt32, nt)]
+
+    # --- Scan each frame in parallel -------------------------------------
+    sig = sigscale / (2 * sfrac^2)
+    # Cap the task count so the per-task `TMPvol` (plus scan temporaries)
+    # fits in roughly half of free memory.
+    per_task = 8 * H * W * D
+    nchunks = clamp(Int((Sys.free_memory() ÷ 2) ÷ per_task), 1,
+                    min(nt, Threads.nthreads()))
+    tasks = map(1:nchunks) do c
+        Threads.@spawn begin
+            TMPvol = zeros(Float32, H, W, D)
+            # One FFT plan pair per task, reused across its chunk of frames.
+            fwd_plan = plan_fft(zeros(ComplexF32, size(sv.freq_psf)), (1, 2))
+            inv_plan = plan_ifft(zeros(ComplexF32, size(sv.freq_psf, 1),
+                                       size(sv.freq_psf, 2)), (1, 2))
+            for kk in c:nchunks:nt
+                # Build TMPvol with this frame's activity.
+                fill!(TMPvol, 0f0)
+                for ll in 1:K_soma
+                    a = soma_act[ll, kk]
+                    a > cutoff || continue
+                    isempty(sv.soma_loc[ll]) && continue
+                    for (i, li) in enumerate(sv.soma_loc[ll])
+                        TMPvol[Int(li)] = sv.soma_val[ll][i] * a
+                    end
+                end
+                for ll in 1:K_soma
+                    a = dend_act[ll, kk]
+                    a > cutoff || continue
+                    isempty(sv.dend_loc[ll]) && continue
+                    for (i, li) in enumerate(sv.dend_loc[ll])
+                        TMPvol[Int(li)] = sv.dend_val[ll][i] * a
+                    end
+                end
+                for ll in 1:K_axon
+                    a = bg_act[ll, kk]
+                    a > cutoff || continue
+                    ll <= length(sv.axon_loc) || continue
+                    isempty(sv.axon_loc[ll]) && continue
+                    for (i, li) in enumerate(sv.axon_loc[ll])
+                        TMPvol[Int(li)] += sv.axon_val[ll][i] * a
+                    end
+                end
+
+                # Scan the active slab.
+                z_loc = z_locs[kk]
+                z_hi = min(z_loc + Np3 - 1, D)
+                sub_vol = @view TMPvol[:, :, z_loc:z_hi]
+                clean_img = sig .* single_scan(sub_vol, (Np1, Np2, Np3), sv.freq_psf;
+                                               z_sub=scan_params.scan_avg, freq_opt=true,
+                                               fwd_plan=fwd_plan, inv_plan=inv_plan)
+
+                # Per-row shift to model motion + buffer crop.
+                if mot_opt && size(clean_img, 1) > 2 * scan_buff &&
+                              size(clean_img, 2) > 2 * scan_buff
+                    clean_img = img_sub_row_shift(clean_img, scan_buff,
+                                                  x_pos_arr[kk], y_off_arr[kk])
+                else
+                    clean_img = clean_img[(scan_buff + 1):(size(clean_img, 1) - scan_buff),
+                                           (scan_buff + 1):(size(clean_img, 2) - scan_buff)]
+                end
+
+                if sfrac > 1 && floor(sfrac) == sfrac
+                    sf = Int(sfrac)
+                    H2 = size(clean_img, 1) ÷ sf
+                    W2 = size(clean_img, 2) ÷ sf
+                    binned = zeros(Float32, H2, W2)
+                    for j in 1:W2, i in 1:H2
+                        s = 0f0
+                        for jj in 1:sf, ii in 1:sf
+                            s += clean_img[(i - 1) * sf + ii, (j - 1) * sf + jj]
+                        end
+                        binned[i, j] = s
+                    end
+                    clean_img = binned
+                end
+
+                if return_clean
+                    # Trim to expected output size.
+                    h_trim = min(size(clean_img, 1), H_out)
+                    w_trim = min(size(clean_img, 2), W_out)
+                    mov_clean[1:h_trim, 1:w_trim, kk] .= @view clean_img[1:h_trim, 1:w_trim]
+                end
+
+                # Noise model.
+                samp_img = if !isnothing(noise_params)
+                    noisy = poisson_gauss_noise(clean_img, noise_params;
+                                                rng=noise_rngs[kk])
+                    pixel_bleed(noisy, noise_params.bleedp, noise_params.bleedw;
+                                rng=noise_rngs[kk])
+                else
+                    clean_img
+                end
+
+                h_trim = min(size(samp_img, 1), H_out)
+                w_trim = min(size(samp_img, 2), W_out)
+                mov[1:h_trim, 1:w_trim, kk] .= @view samp_img[1:h_trim, 1:w_trim]
+            end
+        end
+    end
+    foreach(wait, tasks)
 
     if return_clean && return_motion
         return mov, mov_clean, mot_hist

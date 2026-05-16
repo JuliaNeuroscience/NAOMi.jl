@@ -55,7 +55,8 @@ end
 
 """
     simulate_neural_volume(vol_params, neur_params, vasc_params, dend_params,
-                           axon_params, bg_params; rng=Random.default_rng())
+                           axon_params, bg_params; rng=Random.default_rng(),
+                           couple_dendrites=true)
         -> NeuralVolume
 
 End-to-end neural-volume generation pipeline. Calls (in order):
@@ -72,6 +73,13 @@ End-to-end neural-volume generation pipeline. Calls (in order):
    `axon_params.flag != 0`) to add the per-process axon channel.
 
 Ports `simulate_neural_volume.m`.
+
+`couple_dendrites` is forwarded to [`grow_neuron_dendrites!`](@ref) and
+[`grow_apical_dendrites!`](@ref). The default `true` is the
+upstream-faithful serial growth in which dendrites softly avoid one
+another; `false` grows dendrites in parallel — several times faster, at
+the cost of more inter-dendrite overlap (see [Parallel dendrite
+growth](@ref)).
 """
 function simulate_neural_volume(vol_params::VolumeParams,
                                 neur_params::NeuronParams,
@@ -79,7 +87,8 @@ function simulate_neural_volume(vol_params::VolumeParams,
                                 dend_params::DendriteParams,
                                 axon_params::AxonParams,
                                 bg_params::BackgroundParams;
-                                rng::AbstractRNG=Random.default_rng())
+                                rng::AbstractRNG=Random.default_rng(),
+                                couple_dendrites::Bool=true)
     finalize!(vol_params)
     vres = vol_params.vres
     vol_sz = vol_params.vol_sz
@@ -111,12 +120,13 @@ function simulate_neural_volume(vol_params::VolumeParams,
     neur_num, dendnum_AD, _ = grow_neuron_dendrites!(vol_params, dend_params,
                                                      neur_soma, neur_ves_full,
                                                      locs, gp_nuc, gp_soma;
-                                                     rng=rng)
+                                                     rng=rng, couple_dendrites)
 
     # 5. Through-volume apical dendrites.
     neur_num, neur_num_AD = grow_apical_dendrites!(vol_params, dend_params,
                                                    neur_num, dendnum_AD,
-                                                   gp_nuc, gp_soma; rng=rng)
+                                                   gp_nuc, gp_soma; rng=rng,
+                                                   couple_dendrites)
 
     # 6. Per-cell fluorescence.
     gp_vals, neur_vol = set_cell_fluorescence(vol_params, neur_params,
