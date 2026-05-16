@@ -352,7 +352,7 @@ function vessel_dijkstra(distMat::AbstractMatrix{<:Real}, proot::Integer)
         # pick the smallest *nonzero* entry of unvisited
         best = Inf
         cn_next = 0
-        @inbounds for k in 1:N
+        for k in 1:N
             u = unvisited[k]
             if u != 0 && u < best
                 best = u
@@ -362,7 +362,7 @@ function vessel_dijkstra(distMat::AbstractMatrix{<:Real}, proot::Integer)
         cn = cn_next
         unvisited[cn] = 0.0
         d_cn = distance[cn]
-        @inbounds for nn in 1:N
+        for nn in 1:N
             tovisit[nn] || continue
             ndist = d_cn + distMat[cn, nn]
             if ndist < distance[nn]
@@ -766,7 +766,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
                                           rng=rng)
     actual_ncapp = size(capppos_um, 1)
     capppos = zeros(Int, actual_ncapp, 3)
-    @inbounds for i in 1:actual_ncapp, k in 1:3
+    for i in 1:actual_ncapp, k in 1:3
         capppos[i, k] = Int(capppos_um[i, k]) * Int(vres) + 1 -
                         max(1, ceil(Int, rand(rng) * max(1, Int(vres))))
         capppos[i, k] = clamp(capppos[i, k], 1, sz[k])
@@ -808,7 +808,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
             tgt = nodes[TMPidx].pos
             best = 0
             best_d = Inf
-            @inbounds for k in 1:actual_ncapp
+            for k in 1:actual_ncapp
                 capp_active[k] || continue
                 d = (capppos[k, 1] - tgt[1])^2 +
                     (capppos[k, 2] - tgt[2])^2 +
@@ -863,7 +863,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
     end
     cappconnmat = falses(ncapp, ncapp)
     if ncapp > 1
-        @inbounds for k in 1:ncapp
+        for k in 1:ncapp
             best = 1
             best_d = Inf
             for j in 1:ncapp
@@ -878,7 +878,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
             cappmat[best, k] = Inf
         end
     end
-    @inbounds for k in 1:ncapp, j in 1:ncapp
+    for k in 1:ncapp, j in 1:ncapp
         if cappmat[k, j] > vp.maxcappdist
             cappmat[k, j] = Inf
         end
@@ -903,7 +903,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
             cappmat[i, j] < Inf || continue
             nseg = max(2, 2 * Int(ceil(cappmat[i, j])))
             blocked = false
-            @inbounds for t in 0:(nseg - 1)
+            for t in 0:(nseg - 1)
                 α = t / (nseg - 1)
                 xi = Int(ceil((1 - α) * capppos2[i, 1] + α * capppos2[j, 1]))
                 yi = Int(ceil((1 - α) * capppos2[i, 2] + α * capppos2[j, 2]))
@@ -968,7 +968,7 @@ function grow_capillaries!(nodes::Vector{VesselNode},
 
     # Triangular extraction of the new capp-capp edges.
     connMap = Dict{Tuple{Int,Int}, Int}()
-    @inbounds for i in 1:ncapp, j in (i + 1):ncapp
+    for i in 1:ncapp, j in (i + 1):ncapp
         if cappconnmat[i, j]
             connIdx += 1
             ns = connidxs[i]

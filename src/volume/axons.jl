@@ -42,7 +42,7 @@ function generate_axons(vol_params::VolumeParams,
     volsize = (H, W, D)
 
     bg_pix = falses(volsize)
-    @inbounds for li in eachindex(neur_num)
+    for li in eachindex(neur_num)
         bg_pix[li] = neur_num[li] == 0
     end
     for kk in 1:length(gp_nuc)
@@ -76,7 +76,7 @@ function generate_axons(vol_params::VolumeParams,
     volpad = (H + 2 * padsize, W + 2 * padsize, D + 2 * padsize)
     M = rand(rng, Float32, volpad)
     # Mark non-background voxels as blocked (max float).
-    @inbounds for k in 1:D, j in 1:W, i in 1:H
+    for k in 1:D, j in 1:W, i in 1:H
         if !bg_pix[i, j, k]
             M[i + padsize, j + padsize, k + padsize] = floatmax(Float32)
         end

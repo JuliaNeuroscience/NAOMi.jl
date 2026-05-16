@@ -128,7 +128,7 @@ function generate_neural_body(neur_params::NeuronParams;
     # Covariance based on geodesic (arc-length) distance on the sphere.
     if dists === nothing
         dists = Matrix{Float64}(undef, N, N)
-        @inbounds for j in 1:N, i in 1:N
+        for j in 1:N, i in 1:N
             dx = V[i, 1] - V[j, 1]
             dy = V[i, 2] - V[j, 2]
             dz = V[i, 3] - V[j, 3]
@@ -240,7 +240,7 @@ function _star_volume(V::AbstractMatrix{<:Real})
     N = size(V, 1)
     ω = 4π / N
     s = 0.0
-    @inbounds for i in 1:N
+    for i in 1:N
         r2 = V[i, 1]^2 + V[i, 2]^2 + V[i, 3]^2
         s += r2 * sqrt(r2)   # r^3
     end
@@ -250,7 +250,7 @@ end
 # Local `mean` to avoid pulling Statistics into NAOMi's [deps].
 function mean(x::AbstractArray)
     s = zero(eltype(x))
-    @inbounds for v in x
+    for v in x
         s += v
     end
     return s / length(x)
@@ -288,7 +288,7 @@ function point_in_soma(Vsurface::AbstractMatrix{<:Real},
     N = size(Vsurface, 1)
     best_cos = -Inf
     best_r  = Inf
-    @inbounds for i in 1:N
+    for i in 1:N
         vx = Vsurface[i, 1] - center[1]
         vy = Vsurface[i, 2] - center[2]
         vz = Vsurface[i, 3] - center[3]
@@ -345,7 +345,7 @@ function sample_dense_neurons(neur_params::NeuronParams,
     W = Int(round(vol_sz[2] * vres))
     D = Int(round(vol_sz[3] * vres))
     idx_good = falses(H, W, D)
-    @inbounds for k in 1:D, j in 1:W, i in 1:H
+    for k in 1:D, j in 1:W, i in 1:H
         idx_good[i, j, k] = !ves_trunc[i, j, vol_depth + k]
     end
     idx_bad = copy(idx_good)
@@ -355,7 +355,7 @@ function sample_dense_neurons(neur_params::NeuronParams,
     # Pre-compute geodesic distance matrix once and reuse across cells.
     N = size(V_master, 1)
     Dmat = Matrix{Float64}(undef, N, N)
-    @inbounds for j in 1:N, i in 1:N
+    for j in 1:N, i in 1:N
         dx = V_master[i, 1] - V_master[j, 1]
         dy = V_master[i, 2] - V_master[j, 2]
         dz = V_master[i, 3] - V_master[j, 3]
@@ -388,7 +388,7 @@ function sample_dense_neurons(neur_params::NeuronParams,
         target = rand(rng, 1:tot)
         chosen = (0, 0, 0)
         running = 0
-        @inbounds for k in 1:D, j in 1:W, i in 1:H
+        for k in 1:D, j in 1:W, i in 1:H
             if gpool[i, j, k]
                 running += 1
                 if running == target
@@ -411,7 +411,7 @@ function sample_dense_neurons(neur_params::NeuronParams,
         # Mark a sphere of radius eta*min_dist around new_pt as occupied.
         rsq  = (eta * vol_params.min_dist)^2
         rsq_bad = vol_params.min_dist^2
-        @inbounds for kk in 1:D
+        for kk in 1:D
             zµ = (kk - 1) / (D - 1) * vol_sz[3]
             dz = zµ - new_pt[3]
             (dz^2 > rsq) && continue
@@ -434,7 +434,7 @@ function sample_dense_neurons(neur_params::NeuronParams,
         end
         # Apply the upstream `idx_good = ~(idx_good | ~idx_bad)`:
         # equivalent to `idx_good = (~idx_good) & idx_bad`.
-        @inbounds for k in 1:D, j in 1:W, i in 1:H
+        for k in 1:D, j in 1:W, i in 1:H
             idx_good[i, j, k] = (!idx_good[i, j, k]) & idx_bad[i, j, k]
         end
     end
@@ -458,7 +458,7 @@ function _dilate3d_ball!(vol::AbstractArray{Bool,3}, r::Integer)
     fill!(vol, false)
     H, W, D = size(vol)
     r2 = Float64(r)^2
-    @inbounds for kk in 1:D, jj in 1:W, ii in 1:H
+    for kk in 1:D, jj in 1:W, ii in 1:H
         src[ii, jj, kk] || continue
         for dk in -r:r, dj in -r:r, di in -r:r
             (di^2 + dj^2 + dk^2) <= r2 || continue
@@ -513,7 +513,7 @@ function generate_neural_volume(neur_params::NeuronParams,
     gp_nuc  = Vector{Tuple{Vector{Int32}, Float64}}(undef, K)
     gp_soma = Vector{Vector{Int32}}(undef, K)
     taken = falses(H, W, D)
-    @inbounds for k in 1:D, j in 1:W, i in 1:H
+    for k in 1:D, j in 1:W, i in 1:H
         taken[i, j, k] = neur_ves[i, j, vol_depth + k]
     end
 
@@ -541,7 +541,7 @@ function generate_neural_volume(neur_params::NeuronParams,
         nuc_indices  = Int32[]
         sizehint!(soma_indices, (ix_hi - ix_lo + 1) * (iy_hi - iy_lo + 1))
 
-        @inbounds for kz in iz_lo:iz_hi, jy in iy_lo:iy_hi, ix in ix_lo:ix_hi
+        for kz in iz_lo:iz_hi, jy in iy_lo:iy_hi, ix in ix_lo:ix_hi
             taken[ix, jy, kz] && continue
             # voxel center coords (in microns):
             p = (ix / vres + 0.5 / vres,

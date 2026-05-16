@@ -339,7 +339,7 @@ function dilate_dendrite_paths_all(paths::AbstractArray{<:Real,3},
     H, W, D = size(paths)
     paths_out = Float32.(paths)
     pathnums_out = Int.(pathnums)
-    @inbounds for i in eachindex(paths_out)
+    for i in eachindex(paths_out)
         if obstruction[i] != 0
             paths_out[i] = NaN
         end
@@ -375,7 +375,7 @@ function dilate_dendrite_paths_all(paths::AbstractArray{<:Real,3},
 
     for s in 1:length(shells)
         any_remaining = false
-        @inbounds for c in eachindex(paths_out)
+        for c in eachindex(paths_out)
             if isfinite(paths_out[c]) && paths_out[c] > 1
                 any_remaining = true
                 break
@@ -383,7 +383,7 @@ function dilate_dendrite_paths_all(paths::AbstractArray{<:Real,3},
         end
         any_remaining || break
         hot = Int[]
-        @inbounds for ix in eachindex(paths_out)
+        for ix in eachindex(paths_out)
             if isfinite(paths_out[ix]) && paths_out[ix] > 1
                 push!(hot, ix)
             end
@@ -422,7 +422,7 @@ function dilate_dendrite_paths_all(paths::AbstractArray{<:Real,3},
         end
     end
 
-    @inbounds for i in eachindex(paths_out)
+    for i in eachindex(paths_out)
         if !isfinite(paths_out[i])
             paths_out[i] = 0
         end
@@ -449,7 +449,7 @@ function _build_dendrite_M(dims::NTuple{3,Int},
     M[:, :, end, 6] .= Inf32
     fillfrac = Float32.(obstruction .> 0)
     pen = -Float32(bweight) .* log.(max.(1f-6, 1 .- 2 .* max.(0.0f0, fillfrac .- 0.5f0)))
-    @inbounds for d in 1:6
+    for d in 1:6
         M[:, :, :, d] .+= pen
     end
     return M
@@ -502,7 +502,7 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
     cellVolume = Float32.(neur_soma)
     obstruction_marker = Float32(vol_params.N_neur + Int(round(vol_params.N_den)) +
                                  vol_params.N_bg + 1)
-    @inbounds for k in 1:fulldims[3], j in 1:fulldims[2], i in 1:fulldims[1]
+    for k in 1:fulldims[3], j in 1:fulldims[2], i in 1:fulldims[1]
         if neur_ves[i, j, vol_depth + k]
             cellVolume[i, j, k] = obstruction_marker
         end
@@ -552,31 +552,31 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
             ap = Tuple(CartesianIndices(fulldims)[ap_li])
             # Walk x from rootL[1] → ap[1] with y=rootL[2], z=rootL[3]
             if ap[1] > rootL[1]
-                @inbounds for v in rootL[1]:ap[1]
+                for v in rootL[1]:ap[1]
                     M[v, rootL[2], rootL[3], 1] = 0f0
                 end
             elseif ap[1] < rootL[1]
-                @inbounds for v in ap[1]:rootL[1]
+                for v in ap[1]:rootL[1]
                     M[v, rootL[2], rootL[3], 2] = 0f0
                 end
             end
             # Walk y with x=ap[1], z=rootL[3]
             if ap[2] > rootL[2]
-                @inbounds for v in rootL[2]:ap[2]
+                for v in rootL[2]:ap[2]
                     M[ap[1], v, rootL[3], 3] = 0f0
                 end
             elseif ap[2] < rootL[2]
-                @inbounds for v in ap[2]:rootL[2]
+                for v in ap[2]:rootL[2]
                     M[ap[1], v, rootL[3], 4] = 0f0
                 end
             end
             # Walk z with x=ap[1], y=ap[2]
             if ap[3] > rootL[3]
-                @inbounds for v in rootL[3]:ap[3]
+                for v in rootL[3]:ap[3]
                     M[ap[1], ap[2], v, 5] = 0f0
                 end
             elseif ap[3] < rootL[3]
-                @inbounds for v in ap[3]:rootL[3]
+                for v in ap[3]:rootL[3]
                     M[ap[1], ap[2], v, 6] = 0f0
                 end
             end
@@ -728,7 +728,7 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
 
     # Stochastic rounding → UInt16 thickness.
     thick = zeros(UInt16, fulldims)
-    @inbounds for i in eachindex(cellVolumeVal)
+    for i in eachindex(cellVolumeVal)
         v = cellVolumeVal[i]
         floor_v = floor(v)
         thick[i] = UInt16(min(Int(typemax(UInt16)),
@@ -753,12 +753,12 @@ function grow_neuron_dendrites!(vol_params::VolumeParams,
         end
     end
     dendnumBD_merged = copy(dendnumBD)
-    @inbounds for i in eachindex(dendnumAD)
+    for i in eachindex(dendnumAD)
         if dendnumAD[i] > 0
             dendnumBD_merged[i] = dendnumAD[i]
         end
     end
-    @inbounds for i in eachindex(dendnumBD_merged)
+    for i in eachindex(dendnumBD_merged)
         if dendnumBD_merged[i] > 0
             neur_num[i] = UInt16(dendnumBD_merged[i])
         end
@@ -901,7 +901,7 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
                 finepathsVal[li] += pw[i]
             end
         end
-        @inbounds for li in eachindex(finepathsVal)
+        for li in eachindex(finepathsVal)
             v = finepathsVal[li]
             v > 0 && (finepathsVal[li] = Float32(thicknessScale * atParams[5] *
                                                  v^(1 / rallexp)))
@@ -936,7 +936,7 @@ function grow_apical_dendrites!(vol_params::VolumeParams,
             neur_num_AD_out[x] = 0
         end
     end
-    @inbounds for i in eachindex(neur_num_AD_out)
+    for i in eachindex(neur_num_AD_out)
         if Int(neur_num_AD_out[i]) - Int(neur_num_out[i]) > 0
             neur_num_AD_out[i] = 0
         end
@@ -1033,7 +1033,7 @@ function set_cell_fluorescence(vol_params::VolumeParams,
 
     numcomps = N_neur + N_den
     cell_voxels = [Int32[] for _ in 1:numcomps]
-    @inbounds for li in eachindex(neur_num)
+    for li in eachindex(neur_num)
         k = Int(neur_num[li])
         1 <= k <= numcomps && push!(cell_voxels[k], Int32(li))
     end
@@ -1060,7 +1060,7 @@ function set_cell_fluorescence(vol_params::VolumeParams,
                       Int(floor(vres * neur_locs[kk, 3])))
 
         vals = zeros(Float32, length(loc))
-        @inbounds for (idx, li) in enumerate(loc)
+        for (idx, li) in enumerate(loc)
             c = cart[Int(li)]
             r = sqrt((c[1] - vres * neur_locs[kk, 1])^2 +
                      (c[2] - vres * neur_locs[kk, 2])^2 +
@@ -1089,12 +1089,12 @@ function set_cell_fluorescence(vol_params::VolumeParams,
             else
                 vals[si] .= 1f0
             end
-            @inbounds for i in si
+            for i in si
                 isnan(vals[i]) && (vals[i] = 1f0)
             end
         end
         gp_vals[kk] = (loc=loc, val=vals, is_soma=is_soma_voxel)
-        @inbounds for (idx, li) in enumerate(loc)
+        for (idx, li) in enumerate(loc)
             neur_vol_out[Int(li)] = vals[idx]
         end
     end
@@ -1102,7 +1102,7 @@ function set_cell_fluorescence(vol_params::VolumeParams,
         loc = cell_voxels[kk]
         vals = ones(Float32, length(loc))
         gp_vals[kk] = (loc=loc, val=vals, is_soma=BitVector(falses(length(loc))))
-        @inbounds for li in loc
+        for li in loc
             neur_vol_out[Int(li)] = 1f0
         end
     end
