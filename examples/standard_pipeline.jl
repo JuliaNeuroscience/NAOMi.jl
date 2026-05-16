@@ -33,10 +33,14 @@ function parse_pipeline_args(args)
     nums = tryparse.(Int, args)
     any(isnothing, nums) &&
         error("All arguments must be integers; got $(args)")
-    all(>(0), nums) || error("All arguments must be positive; got $(nums)")
+    all(>(0), nums[1:3]) ||
+        error("Volume size SX SY SZ must be positive; got $(nums[1:3])")
     vol_sz = nums[1:3]
-    n_neur = length(nums) >= 4 ? nums[4] : 0   # 0 → derive from density
-    nt     = length(nums) >= 5 ? nums[5] : 60
+    # n_neur == 0 is the "derive from density" sentinel resolved by `finalize!`.
+    n_neur = length(nums) >= 4 ? nums[4] : 0
+    n_neur >= 0 || error("N_NEUR must be ≥ 0 (0 derives from density); got $(n_neur)")
+    nt = length(nums) >= 5 ? nums[5] : 60
+    nt > 0 || error("NT must be positive; got $(nt)")
     return vol_sz, n_neur, nt
 end
 
@@ -66,10 +70,17 @@ println("Volume: $(vol_sz[1])×$(vol_sz[2])×$(vol_sz[3]) µm, " *
         "$(vol_params.N_neur) neurons, $(nt) frames")
 
 # --- 1. Neural volume ----------------------------------------------------
-println("Simulating neural volume...")
+# Grow dendrites in parallel when Julia was started with more than one
+# thread (`julia -t auto …`); a single-threaded run keeps the slower,
+# upstream-faithful serial growth. See the "Parallel dendrite growth"
+# section of the docs for the speed/overlap tradeoff.
+couple_dendrites = Threads.nthreads() == 1
+println("Simulating neural volume (", couple_dendrites ? "serial" :
+        "parallel, $(Threads.nthreads()) threads", " dendrites)...")
 t0 = time()
 neur_vol = simulate_neural_volume(vol_params, neur_params, vasc_params,
-                                  dend_params, axon_params, bg_params; rng=rng)
+                                  dend_params, axon_params, bg_params;
+                                  rng=rng, couple_dendrites)
 println("  done in $(round(time() - t0; digits=2)) s")
 
 # --- 2. Point-spread function -------------------------------------------
