@@ -14,6 +14,7 @@ analysis pipelines. [`scan_volume`](@ref) is the top-level entry point.
 ```@docs
 psf_fft
 single_scan
+ScanWorkspace
 setup_scan_volume_frame
 scan_volume_frame
 ScanVolume
